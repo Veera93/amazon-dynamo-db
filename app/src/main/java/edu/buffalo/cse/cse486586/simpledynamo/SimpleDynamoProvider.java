@@ -170,52 +170,6 @@ public class SimpleDynamoProvider extends ContentProvider {
         running = false;
     }
 
-    private String genHash(String input) throws NoSuchAlgorithmException {
-        MessageDigest sha1 = MessageDigest.getInstance("SHA-1");
-        byte[] sha1Hash = sha1.digest(input.getBytes());
-        Formatter formatter = new Formatter();
-        for (byte b : sha1Hash) {
-            formatter.format("%02x", b);
-        }
-        return formatter.toString();
-    }
-
-    private boolean isOwner(String key, String predecessor, String successor, String current) {
-        String hashedId = null;
-        String hashedSuccessor = null;
-        String hashedPredecessor = null;
-        String myHashedId = null;
-        try {
-            hashedId = genHash(key);
-            hashedSuccessor = genHash(successor);
-            hashedPredecessor = genHash(predecessor);
-            myHashedId = genHash(current);
-        } catch (NoSuchAlgorithmException e) {
-            e.printStackTrace();
-        }
-
-        int nodeKey = hashedId.compareTo(myHashedId);
-        int succPred = hashedSuccessor.compareTo(hashedPredecessor);
-        int nodePred = myHashedId.compareTo(hashedPredecessor);
-        int keyPred = hashedId.compareTo(hashedPredecessor);
-
-        if(nodeKey == 0) {
-            return true;
-        } else if(succPred == 0 && nodePred == 0) {
-            return true;
-        } else if(nodePred < 0) {
-            if(keyPred > 0 && nodeKey > 0) {
-                return true;
-            } else if(keyPred < 0 && nodeKey < 0) {
-                return true;
-            }
-        } else if(keyPred > 0 && nodeKey < 0) {
-            return true;
-        }
-
-        return false;
-    }
-
     public void customInsert(String key, String value) {
         //ToDo: Need to revisit
         try{
@@ -309,4 +263,86 @@ public class SimpleDynamoProvider extends ContentProvider {
         }
         return cursor;
     }
+
+    public static String[] getPreferenceList(String[] list, String node) {
+        int location = 0;
+        for(int i=0;i<list.length;i++) {
+            if(list[i].equals(node)) {
+                location = i;
+                break;
+            }
+        }
+        if(location == list.length - 1) {
+            return new String[] { list[location], list[0], list[1] };
+        } else if (location == list.length - 2) {
+            return new String[] { list[location], list[location + 1], list[0] };
+        } else {
+            return new String[] { list[location], list[location+1], list[location+2]};
+        }
+    }
+
+    public static String[] getNodeInfo(String[] list, String node) {
+        int location = 0;
+        for(int i=0;i<list.length;i++) {
+            if(list[i].equals(node)) {
+                location = i;
+                break;
+            }
+        }
+        if(location == 0) {
+            return new String[] {list[list.length - 1], list[1]};
+        } else if (location == list.length - 1) {
+            return new String[] {list[list.length - 2], list[0]};
+        } else {
+            return new String[] {list[location - 1], list[location + 1]};
+        }
+    }
+
+    private String genHash(String input) throws NoSuchAlgorithmException {
+        MessageDigest sha1 = MessageDigest.getInstance("SHA-1");
+        byte[] sha1Hash = sha1.digest(input.getBytes());
+        Formatter formatter = new Formatter();
+        for (byte b : sha1Hash) {
+            formatter.format("%02x", b);
+        }
+        return formatter.toString();
+    }
+
+    private boolean isOwner(String key, String predecessor, String successor, String current) {
+        String hashedId = null;
+        String hashedSuccessor = null;
+        String hashedPredecessor = null;
+        String myHashedId = null;
+        try {
+            hashedId = genHash(key);
+            hashedSuccessor = genHash(successor);
+            hashedPredecessor = genHash(predecessor);
+            myHashedId = genHash(current);
+        } catch (NoSuchAlgorithmException e) {
+            e.printStackTrace();
+        }
+
+        int nodeKey = hashedId.compareTo(myHashedId);
+        int succPred = hashedSuccessor.compareTo(hashedPredecessor);
+        int nodePred = myHashedId.compareTo(hashedPredecessor);
+        int keyPred = hashedId.compareTo(hashedPredecessor);
+
+        if(nodeKey == 0) {
+            return true;
+        } else if(succPred == 0 && nodePred == 0) {
+            return true;
+        } else if(nodePred < 0) {
+            if(keyPred > 0 && nodeKey > 0) {
+                return true;
+            } else if(keyPred < 0 && nodeKey < 0) {
+                return true;
+            }
+        } else if(keyPred > 0 && nodeKey < 0) {
+            return true;
+        }
+
+        return false;
+    }
+
+
 }
