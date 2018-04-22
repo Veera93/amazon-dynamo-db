@@ -69,8 +69,27 @@ public class SimpleDynamoProvider extends ContentProvider {
 
     @Override
     public Uri insert(Uri uri, ContentValues values) {
-        // TODO Auto-generated method stub
-        return null;
+        /*
+         * values will have two columns (a key
+         * column and a value column) and one row that contains the actual (key, value) pair to be
+         * inserted.
+         *
+         * Used SQLite for database
+         */
+        try {
+            Log.v(TAG,"Content provider insert called "+values.toString());
+            String key = (String) values.get(SimpleDynamoDataEntry.COLUMN_NAME_KEY);
+            String value = (String) values.get(SimpleDynamoDataEntry.COLUMN_NAME_VALUE);
+            String coordinatorId = findOwner(key);
+            Log.v(TAG,"Forwarding to coordinator");
+            Integer coordinatorPort = Integer.parseInt(coordinatorId) * 2;
+            String args = myId+SimpleDynamoConfiguration.ARG_DELIMITER+key+SimpleDynamoConfiguration.ARG_DELIMITER+value;
+            new ClientTask().executeOnExecutor(AsyncTask.SERIAL_EXECUTOR, SimpleDynamoRequest.Type.INSERT, coordinatorPort.toString(), args);
+        } catch (Exception e) {
+            Log.e(TAG, e.getMessage());
+        } finally {
+            return uri;
+        }
     }
 
     @Override
@@ -138,7 +157,10 @@ public class SimpleDynamoProvider extends ContentProvider {
         protected Void doInBackground(String... msgs) {
             String type = msgs[0];
             String toSendPort = msgs[1];
-            //ToDo: Code client logic here
+
+            if(type.equals(SimpleDynamoRequest.Type.INSERT)) {
+                //ToDo: Send insert to all its preference list
+            }
             return null;
         }
     }
@@ -281,7 +303,7 @@ public class SimpleDynamoProvider extends ContentProvider {
         }
     }
 
-    public static String[] getNodeInfo(String[] list, String node) {
+    public static String[] getPredSucc(String[] list, String node) {
         int location = 0;
         for(int i=0;i<list.length;i++) {
             if(list[i].equals(node)) {
@@ -342,6 +364,17 @@ public class SimpleDynamoProvider extends ContentProvider {
         }
 
         return false;
+    }
+
+    private String findOwner(String key) {
+        String[] predAndSucc;
+        for(String port: SimpleDynamoConfiguration.PORTS) {
+            predAndSucc = getPredSucc(SimpleDynamoConfiguration.PORTS, port);
+            if(isOwner(key, predAndSucc[0], predAndSucc[1], port)) {
+                return port;
+            }
+        }
+        return null;
     }
 
 
