@@ -13,12 +13,14 @@ import java.util.Formatter;
 
 import android.content.ContentProvider;
 import android.content.ContentValues;
+import android.content.Context;
 import android.database.Cursor;
 import android.database.DatabaseUtils;
 import android.database.MatrixCursor;
 import android.database.sqlite.SQLiteDatabase;
 import android.net.Uri;
 import android.os.AsyncTask;
+import android.telephony.TelephonyManager;
 import android.util.Log;
 
 import edu.buffalo.cse.cse486586.simpledynamo.SimpleDynamoSchema.SimpleDynamoDataEntry;
@@ -40,8 +42,29 @@ public class SimpleDynamoProvider extends ContentProvider {
     }
 	@Override
 	public boolean onCreate() {
-		// TODO Auto-generated method stub
-		return false;
+        running = true;
+        /*
+         * Calculate the port number that this AVD listens on.
+         * It is just a hack that I came up with to get around the networking limitations of AVDs.
+         */
+        TelephonyManager tel = (TelephonyManager) getContext().getSystemService(Context.TELEPHONY_SERVICE);
+        myId = tel.getLine1Number().substring(tel.getLine1Number().length() - 4);
+
+        try {
+            /*
+             * Create a server socket as well as a thread (AsyncTask) that listens on the server
+             * port.
+             *
+             * AsyncTask is a simplified thread construct that Android provides.
+             */
+            ServerSocket serverSocket = new ServerSocket(SimpleDynamoConfiguration.SERVER_PORT);
+            new ServerTask().executeOnExecutor(AsyncTask.THREAD_POOL_EXECUTOR, serverSocket);
+        } catch (IOException e) {
+            Log.e(TAG, "Can't create a ServerSocket");
+            return true;
+        }
+
+        return true;
 	}
 
     @Override
