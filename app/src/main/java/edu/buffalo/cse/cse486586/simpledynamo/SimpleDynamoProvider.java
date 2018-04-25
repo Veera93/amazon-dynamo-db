@@ -96,14 +96,14 @@ public class SimpleDynamoProvider extends ContentProvider {
             SimpleDynamoRequest request = new SimpleDynamoRequest(coordinatorId, SimpleDynamoRequest.Type.COORDINATOR, token);
             String args = request.toString();
             sendToCoordinator(coordinatorPort.toString(), args);
-            String output = blockingQueue.poll(SimpleDynamoConfiguration.TIMEOUT_TIME, TimeUnit.MILLISECONDS);
+            String output = blockingQueue.poll(SimpleDynamoConfiguration.TIMEOUT_BLOCKING, TimeUnit.MILLISECONDS);
             //If timeout expires then output will be null
             if(output == null) {
                 Log.v(TAG, "Sending inserting again");
                 //insert(uri, values);
             }
         } catch (Exception e) {
-            Log.e(TAG, e.getMessage());
+            Log.e(TAG, "Exception in Sending inserting again");
         } finally {
             return uri;
         }
@@ -146,7 +146,7 @@ public class SimpleDynamoProvider extends ContentProvider {
                     } catch (IOException e) {
                         Log.e(TAG, "IO Exception in query");
                     } catch (Exception e) {
-                        Log.e(TAG, "Exception in query");
+                        Log.e(TAG, "Exception in query 1");
                     }
                 }
                 cursor = matrixCursor;
@@ -178,13 +178,16 @@ public class SimpleDynamoProvider extends ContentProvider {
                     }
                     cursor = matrixCursor;
                 } catch (IOException e) {
-
+                    Log.e(TAG, e.getMessage());
+                    Log.e(TAG, "IO Exception in Query");
                 } catch (Exception e) {
-
+                    Log.e(TAG, e.getMessage());
+                    Log.e(TAG, "Exception in Query 2");
                 }
             }
         } catch (Exception e) {
             Log.e(TAG,e.getMessage());
+            Log.e(TAG, "Exception in Query 3");
         } finally {
             Log.v(TAG, "Returning");
             return cursor;
@@ -257,6 +260,7 @@ public class SimpleDynamoProvider extends ContentProvider {
                             new ClientTask().executeOnExecutor(AsyncTask.SERIAL_EXECUTOR, SimpleDynamoResponse.Type.REPLICATE, coordinator , parsedMsg[2]);
                         } else if (type.equals(SimpleDynamoResponse.Type.REPLICATE)) {
                             String token = parsedMsg[2];
+                            Log.v(TAG, "Response "+token);
                             int count = insertResponse.get(token);
                             if(count == 1) {
                                 String[] tokenArr = token.split(SimpleDynamoConfiguration.ARG_DELIMITER);
@@ -382,6 +386,7 @@ public class SimpleDynamoProvider extends ContentProvider {
                 //ToDo: Call with port's successor for failure handling
             } catch (Exception e) {
                 Log.e(TAG, e.getMessage());
+                Log.e(TAG, "Exception in Send to co ordinator");
             }
     }
 
@@ -406,6 +411,7 @@ public class SimpleDynamoProvider extends ContentProvider {
 
         } catch (Exception e) {
             Log.e(TAG, e.getMessage());
+            Log.e(TAG, "Exception in Customer insert");
         }
     }
 
@@ -447,6 +453,7 @@ public class SimpleDynamoProvider extends ContentProvider {
             }
         } catch (Exception e) {
             Log.e(TAG, e.getMessage());
+            Log.e(TAG, "Exception in custom Query");
         } finally {
             mCursor.close();
             return messages;
@@ -503,6 +510,7 @@ public class SimpleDynamoProvider extends ContentProvider {
             );
         } catch (Exception e) {
             Log.e(TAG, e.getMessage());
+            Log.e(TAG, "Exception in local Query");
         }
         return cursor;
     }
