@@ -36,6 +36,7 @@ class SimpleDynamoRequest {
         // ToDo: keep the types as static final String
         static final String COORDINATOR = "coordinator";
         static final String REPLICATE = "replicate";
+        static final String QUERY = "query";
     }
 }
 
