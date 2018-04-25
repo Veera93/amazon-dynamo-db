@@ -100,7 +100,7 @@ public class SimpleDynamoProvider extends ContentProvider {
             //If timeout expires then output will be null
             if(output == null) {
                 Log.v(TAG, "Sending inserting again");
-                insert(uri, values);
+                //insert(uri, values);
             }
         } catch (Exception e) {
             Log.e(TAG, e.getMessage());
