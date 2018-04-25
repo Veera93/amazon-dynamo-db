@@ -18,7 +18,7 @@ import edu.buffalo.cse.cse486586.simpledynamo.SimpleDynamoSchema.SimpleDynamoDat
 public class SimpleDynamoDbHelper extends SQLiteOpenHelper {
 
     public static final int DATABASE_VERSION = 1;
-    public static final String DATABASE_NAME = "Chord.db";
+    public static final String DATABASE_NAME = "Dynamo.db";
 
     private static final String SQL_CREATE_ENTRIES =
             "CREATE TABLE " + SimpleDynamoSchema.SimpleDynamoDataEntry.TABLE_NAME + " (" +

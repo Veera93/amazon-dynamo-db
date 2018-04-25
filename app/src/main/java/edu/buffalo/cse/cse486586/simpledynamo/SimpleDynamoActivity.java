@@ -13,9 +13,22 @@ public class SimpleDynamoActivity extends Activity {
 	protected void onCreate(Bundle savedInstanceState) {
 		super.onCreate(savedInstanceState);
 		setContentView(R.layout.activity_simple_dynamo);
-    
+
 		TextView tv = (TextView) findViewById(R.id.textView1);
-        tv.setMovementMethod(new ScrollingMovementMethod());
+		tv.setMovementMethod(new ScrollingMovementMethod());
+		findViewById(R.id.button3).setOnClickListener(
+				new OnTestClickListener(tv, getContentResolver()));
+		findViewById(R.id.button2).setOnClickListener(
+				new OnGDumpClickListener(tv, getContentResolver()));
+		findViewById(R.id.button1).setOnClickListener(
+				new OnLDumpClickListener(tv, getContentResolver()));
+		findViewById(R.id.button5).setOnClickListener(
+				new OnLDeleteClickListener(tv, getContentResolver()));
+		findViewById(R.id.button6).setOnClickListener(
+				new OnGDeleteClickListener(tv, getContentResolver()));
+		findViewById(R.id.button7).setOnClickListener(
+				new OnKDeleteClickListener(tv, getContentResolver()));
+
 	}
 
 	@Override

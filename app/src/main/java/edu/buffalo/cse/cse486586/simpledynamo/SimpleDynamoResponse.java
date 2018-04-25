@@ -27,6 +27,7 @@ public class SimpleDynamoResponse {
     }
 
     static final class Type {
-        // ToDo: keep the types as static final String
+        static final String INSERT = "insertResponse";
+        static final String REPLICATE = "replicateResponse";
     }
 }

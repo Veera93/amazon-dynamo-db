@@ -8,7 +8,7 @@ package edu.buffalo.cse.cse486586.simpledynamo;
 class SimpleDynamoRequest {
 
     /*********
-    type = insert               : id; key; value
+    type = coordinator               : coordinator; type; key+value+originator
 
 
     **********/
@@ -34,7 +34,8 @@ class SimpleDynamoRequest {
 
     static final class Type {
         // ToDo: keep the types as static final String
-        static final String INSERT = "insert";
+        static final String COORDINATOR = "coordinator";
+        static final String REPLICATE = "replicate";
     }
 }
 
