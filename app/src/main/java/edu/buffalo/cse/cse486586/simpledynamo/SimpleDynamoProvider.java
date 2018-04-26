@@ -9,23 +9,19 @@ import java.net.Socket;
 import java.net.SocketException;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
-import java.sql.Array;
+
 import java.util.Arrays;
 import java.util.Formatter;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.concurrent.ArrayBlockingQueue;
-import java.util.concurrent.BlockingDeque;
 import java.util.concurrent.BlockingQueue;
-import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.TimeUnit;
 
 import android.content.ContentProvider;
 import android.content.ContentValues;
 import android.content.Context;
-import android.content.res.Configuration;
 import android.database.Cursor;
-import android.database.DatabaseUtils;
 import android.database.MatrixCursor;
 import android.database.sqlite.SQLiteDatabase;
 import android.net.Uri;
@@ -90,7 +86,6 @@ public class SimpleDynamoProvider extends ContentProvider {
             String key = (String) values.get(SimpleDynamoDataEntry.COLUMN_NAME_KEY);
             String value = (String) values.get(SimpleDynamoDataEntry.COLUMN_NAME_VALUE);
             String coordinatorId = findOwner(key);
-            Log.v(TAG,"Forwarding to coordinator "+ coordinatorId);
             Integer coordinatorPort = Integer.parseInt(coordinatorId) * 2;
             String token = key+SimpleDynamoConfiguration.ARG_DELIMITER+value+SimpleDynamoConfiguration.ARG_DELIMITER+myId;
             SimpleDynamoRequest request = new SimpleDynamoRequest(coordinatorId, SimpleDynamoRequest.Type.COORDINATOR, token);
@@ -99,7 +94,7 @@ public class SimpleDynamoProvider extends ContentProvider {
             String output = blockingQueue.poll(SimpleDynamoConfiguration.TIMEOUT_BLOCKING, TimeUnit.MILLISECONDS);
             //If timeout expires then output will be null
             if(output == null) {
-                Log.v(TAG, "Sending inserting again");
+                Log.v(TAG, "Resending inserting again for "+key+" to "+coordinatorPort);
                 //insert(uri, values);
             }
         } catch (Exception e) {
@@ -178,15 +173,14 @@ public class SimpleDynamoProvider extends ContentProvider {
                     }
                     cursor = matrixCursor;
                 } catch (IOException e) {
-                    Log.e(TAG, e.getMessage());
                     Log.e(TAG, "IO Exception in Query");
                 } catch (Exception e) {
-                    Log.e(TAG, e.getMessage());
+                    Log.e(TAG, " E "+e.getMessage());
                     Log.e(TAG, "Exception in Query 2");
                 }
             }
         } catch (Exception e) {
-            Log.e(TAG,e.getMessage());
+            Log.e(TAG," " + Arrays.toString(e.getStackTrace()));
             Log.e(TAG, "Exception in Query 3");
         } finally {
             Log.v(TAG, "Returning");
@@ -260,14 +254,18 @@ public class SimpleDynamoProvider extends ContentProvider {
                             new ClientTask().executeOnExecutor(AsyncTask.SERIAL_EXECUTOR, SimpleDynamoResponse.Type.REPLICATE, coordinator , parsedMsg[2]);
                         } else if (type.equals(SimpleDynamoResponse.Type.REPLICATE)) {
                             String token = parsedMsg[2];
-                            Log.v(TAG, "Response "+token);
-                            int count = insertResponse.get(token);
-                            if(count == 1) {
-                                String[] tokenArr = token.split(SimpleDynamoConfiguration.ARG_DELIMITER);
-                                new ClientTask().executeOnExecutor(AsyncTask.SERIAL_EXECUTOR, SimpleDynamoResponse.Type.INSERT, tokenArr[2], parsedMsg[2]);
-                                insertResponse.remove(token);
+                            Integer count = insertResponse.get(token);
+                            Log.v(TAG, "Server insertResponse : "+insertResponse.get(token)+" for "+token);
+                            if(count != null) {
+                                if(count.equals(1)) {
+                                    String[] tokenArr = token.split(SimpleDynamoConfiguration.ARG_DELIMITER);
+                                    new ClientTask().executeOnExecutor(AsyncTask.SERIAL_EXECUTOR, SimpleDynamoResponse.Type.INSERT, tokenArr[2], parsedMsg[2]);
+                                    insertResponse.remove(token);
+                                } else {
+                                    insertResponse.put(token, insertResponse.get(token) - 1);
+                                }
                             } else {
-                                insertResponse.put(token, insertResponse.get(token) - 1);
+                                Log.v("ALERT", token);
                             }
                         } else if(type.equals(SimpleDynamoResponse.Type.INSERT)) {
                             blockingQueue.offer(parsedMsg[2]);
@@ -311,7 +309,6 @@ public class SimpleDynamoProvider extends ContentProvider {
 
         @Override
         protected Void doInBackground(String... msgs) {
-            Log.v(TAG, "Client Task called");
             String type = msgs[0];
             if(type.equals(SimpleDynamoRequest.Type.REPLICATE)) {
                 String coordinatorId = msgs[1];
@@ -320,16 +317,11 @@ public class SimpleDynamoProvider extends ContentProvider {
                 String[] preList = getPreferenceList(SimpleDynamoConfiguration.PORTS, coordinatorId);
                 String args = request.toString();
                 if(coordinatorId.equals(myId)) {
-                    Log.v(TAG, "Key owner is alive");
-                    int count = sendMessages(new String[] { preList[1], preList[2] } ,args);
-                    insertResponse.put(token, count);
+                    sendReplicateMessages(new String[] { preList[1], preList[2] } ,args);
                 } else {
-                    Log.v(TAG, "Key owner is dead");
-                    int count = sendMessages(new String[] { preList[2] }, args);
-                    insertResponse.put(token, count);
+                    sendReplicateMessages(new String[] { preList[2] }, args);
                 }
             } else if(type.equals(SimpleDynamoResponse.Type.REPLICATE)) {
-                Log.v(TAG, "Sending reply"+msgs[2]);
                 SimpleDynamoResponse response = new SimpleDynamoResponse(myId, SimpleDynamoResponse.Type.REPLICATE, msgs[2]);
                 String arg = response.toString();
                 sendMessages(new String[] {msgs[1]}, arg);
@@ -349,6 +341,7 @@ public class SimpleDynamoProvider extends ContentProvider {
         for(String id : ids) {
             try {
                 Integer port = (Integer.parseInt(id) * 2);
+                Log.v(TAG,"Outgoing message to "+ port+" message "+message);
                 Socket socket = new Socket(InetAddress.getByAddress(new byte[]{10, 0, 2, 2}), port);
                 DataOutputStream out = new DataOutputStream(socket.getOutputStream());
                 socket.setSoTimeout(SimpleDynamoConfiguration.TIMEOUT_TIME);
@@ -370,8 +363,41 @@ public class SimpleDynamoProvider extends ContentProvider {
         return count;
     }
 
+    private void sendReplicateMessages(String[] ids, String message) {
+        //Any message to be sent to any participant goes here
+        for(String id : ids) {
+            try {
+                Integer port = (Integer.parseInt(id) * 2);
+                Log.v(TAG,"Outgoing message to "+ port+" message "+message);
+                Socket socket = new Socket(InetAddress.getByAddress(new byte[]{10, 0, 2, 2}), port);
+                DataOutputStream out = new DataOutputStream(socket.getOutputStream());
+                socket.setSoTimeout(SimpleDynamoConfiguration.TIMEOUT_TIME);
+                socket.setTcpNoDelay(false);
+                //Send data to server
+                out.writeUTF(message);
+                socket.close();
+                String[] parsedMsg = message.split(SimpleDynamoConfiguration.DELIMITER);
+                Integer prevCount = insertResponse.get(parsedMsg[2]);
+                if(prevCount != null) {
+                    insertResponse.put(parsedMsg[2], insertResponse.get(parsedMsg[2]) + 1);
+                    Log.v(TAG, "insertResponse : "+insertResponse.get(parsedMsg[2])+" for "+parsedMsg[2]);
+                } else {
+                    insertResponse.put(parsedMsg[2], 1);
+                    Log.v(TAG, "insertResponse : "+insertResponse.get(parsedMsg[2])+" for "+parsedMsg[2]);
+                }
+            } catch (SocketException e) {
+                Log.e(TAG, "ClientTask Socket Exception");
+            } catch (IOException e) {
+                Log.e(TAG, "ClientTask socket IOException ");
+            } catch (Exception e) {
+                Log.e(TAG, e.getMessage());
+            }
+        }
+    }
+
     private void sendToCoordinator(String port, String message) {
             //Any message to be sent to any coordinator goes here and it will be blocked using the socket
+            Log.v(TAG,"Outgoing message to "+ port+" message "+message);
             try {
                 //Send data to server
                 Socket socket = new Socket(InetAddress.getByAddress(new byte[]{10, 0, 2, 2}), Integer.parseInt(port));
@@ -398,7 +424,7 @@ public class SimpleDynamoProvider extends ContentProvider {
 
     private void customInsert(String key, String value) {
         try{
-            Log.v(TAG,"insert handled in custom");
+            Log.v(TAG,"Insert Custom "+ key+" "+value);
             dbHelper = new SimpleDynamoDbHelper(this.getContext());
             db = dbHelper.getWritableDatabase();
             String[] keyVal = customQuery(key);
@@ -417,7 +443,7 @@ public class SimpleDynamoProvider extends ContentProvider {
 
     private String[] customQuery(String key) {
         //ToDo: Need to revisit
-        Log.v(TAG,"query "+key);
+        Log.v(TAG,"Query Custom "+key);
         Cursor mCursor = null;
         dbHelper = new SimpleDynamoDbHelper(this.getContext());
         db = dbHelper.getReadableDatabase();
@@ -427,7 +453,6 @@ public class SimpleDynamoProvider extends ContentProvider {
                 String sql = "SELECT * FROM "+ SimpleDynamoDataEntry.TABLE_NAME;
                 mCursor = db.rawQuery(sql, null);
             } else {
-                Log.v(TAG, "query handled in custom");
                 String sql = "SELECT * FROM "+SimpleDynamoDataEntry.TABLE_NAME+" WHERE key = ?";
                 String[] selectionArgs = {key};
                 mCursor = db.rawQuery(sql, selectionArgs);
@@ -461,6 +486,7 @@ public class SimpleDynamoProvider extends ContentProvider {
     }
 
     private int customUpdate(String key, String value) {
+        Log.v(TAG,"Update Custom "+key+" "+value);
         String mSelection = SimpleDynamoDataEntry.COLUMN_NAME_KEY + " LIKE ?";
         String[] mSelectionArgs = { key };
         ContentValues values = new ContentValues();
@@ -477,7 +503,7 @@ public class SimpleDynamoProvider extends ContentProvider {
 
     private int customDelete(String selection) {
         //ToDo: Need to revisit
-        Log.v(TAG, "Deleting Locally");
+        Log.v(TAG, "Deleting Locally "+selection);
         int rowsAffected = 0;
         dbHelper = new SimpleDynamoDbHelper(this.getContext());
         db = dbHelper.getWritableDatabase();
@@ -494,7 +520,7 @@ public class SimpleDynamoProvider extends ContentProvider {
 
     private Cursor localQuery(String[] projection, String selection, String[] mSelectArg, String sortOrder) {
         //ToDo: Need to revisit
-        Log.v(TAG, "Query Handled locally");
+        Log.v(TAG, "Query @ Custom "+selection);
         dbHelper = new SimpleDynamoDbHelper(this.getContext());
         db = dbHelper.getReadableDatabase();
         Cursor cursor = null;
