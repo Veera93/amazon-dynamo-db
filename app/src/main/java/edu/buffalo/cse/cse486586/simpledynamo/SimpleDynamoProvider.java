@@ -93,9 +93,13 @@ public class SimpleDynamoProvider extends ContentProvider {
             sendToCoordinator(coordinatorPort.toString(), args);
             String output = blockingQueue.poll(SimpleDynamoConfiguration.TIMEOUT_BLOCKING, TimeUnit.MILLISECONDS);
             //If timeout expires then output will be null
+            Log.v(TAG,"Blocking queue released: "+ output);
             if(output == null) {
+                String newCoordinator = findNewCoordinator(coordinatorId);
                 Log.v(TAG, "Resending inserting again for "+key+" to "+coordinatorPort);
-                //insert(uri, values);
+                sendToCoordinator(newCoordinator.toString(), args);
+                output = blockingQueue.poll(SimpleDynamoConfiguration.TIMEOUT_BLOCKING, TimeUnit.MILLISECONDS);
+                Log.v(TAG,"Second Blocking queue released: "+ output);
             }
         } catch (Exception e) {
             Log.e(TAG, "Exception in Sending inserting again");
@@ -655,6 +659,19 @@ public class SimpleDynamoProvider extends ContentProvider {
         int loc = location - 1;
 
         return loc >- 1 ? SimpleDynamoConfiguration.PORTS[loc]: SimpleDynamoConfiguration.PORTS[SimpleDynamoConfiguration.PORTS.length -1];
+    }
+
+    private String findNewCoordinator(String coordinator) {
+        int location = 0;
+        for (int i = 0; i < SimpleDynamoConfiguration.PORTS.length; i++) {
+            if (SimpleDynamoConfiguration.PORTS[i].equals(coordinator)) {
+                location = i;
+                break;
+            }
+        }
+        int loc = location + 1;
+
+        return loc > 4 ? SimpleDynamoConfiguration.PORTS[0]:SimpleDynamoConfiguration.PORTS[loc];
     }
 
 }
