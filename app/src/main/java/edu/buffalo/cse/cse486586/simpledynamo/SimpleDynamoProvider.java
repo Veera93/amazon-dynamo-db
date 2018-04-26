@@ -139,7 +139,7 @@ public class SimpleDynamoProvider extends ContentProvider {
                         }
                         socket.close();
                     } catch (IOException e) {
-                        Log.e(TAG, "IO Exception in query");
+                        Log.e(TAG, "IO Exception in query "+id);
                     } catch (Exception e) {
                         Log.e(TAG, "Exception in query 1");
                     }
@@ -150,34 +150,7 @@ public class SimpleDynamoProvider extends ContentProvider {
             } else if(selection != null) {
                 String coordinator = findOwner(selection);
                 String readOwner = findReadOwner(coordinator);
-                Integer readOwnerPort = Integer.parseInt(readOwner) * 2;
-                try {
-                    Socket socket = new Socket(InetAddress.getByAddress(new byte[]{10, 0, 2, 2}), readOwnerPort);
-                    DataOutputStream out = new DataOutputStream(socket.getOutputStream());
-                    socket.setSoTimeout(SimpleDynamoConfiguration.TIMEOUT_TIME);
-                    socket.setTcpNoDelay(false);
-                    SimpleDynamoRequest request = new SimpleDynamoRequest(myId, SimpleDynamoRequest.Type.QUERY, selection);
-                    String message = request.toString();
-                    //Send data to server
-                    out.writeUTF(message);
-
-                    //Receive data from server
-                    DataInputStream in = new DataInputStream(socket.getInputStream());
-                    String reply = in.readUTF();
-                    String[] response = reply.split(SimpleDynamoConfiguration.ARG_DELIMITER);
-                    if(response.length > 0) {
-                        for(int i = 0; i < response.length - 1 ; i++) {
-                            matrixCursor.addRow(new String[] {response[i], response[i+1]});
-                            i++;
-                        }
-                    }
-                    cursor = matrixCursor;
-                } catch (IOException e) {
-                    Log.e(TAG, "IO Exception in Query");
-                } catch (Exception e) {
-                    Log.e(TAG, " E "+e.getMessage());
-                    Log.e(TAG, "Exception in Query 2");
-                }
+                cursor = remoteQuery(readOwner, selection, true);
             }
         } catch (Exception e) {
             Log.e(TAG," " + Arrays.toString(e.getStackTrace()));
@@ -501,23 +474,6 @@ public class SimpleDynamoProvider extends ContentProvider {
         return count;
     }
 
-    private int customDelete(String selection) {
-        //ToDo: Need to revisit
-        Log.v(TAG, "Deleting Locally "+selection);
-        int rowsAffected = 0;
-        dbHelper = new SimpleDynamoDbHelper(this.getContext());
-        db = dbHelper.getWritableDatabase();
-        if(selection.compareTo(SimpleDynamoConfiguration.GLOBAL) == 0 || selection.compareTo(SimpleDynamoConfiguration.LOCAL) == 0) {
-            rowsAffected = db.delete(SimpleDynamoDataEntry.TABLE_NAME, null, null);
-        } else {
-            String mselection = SimpleDynamoDataEntry.COLUMN_NAME_KEY + " LIKE ?";
-            String[] mselectionArgs = { selection };
-            // Issue SQL statement.
-            rowsAffected = db.delete(SimpleDynamoDataEntry.TABLE_NAME, mselection, mselectionArgs);
-        }
-        return rowsAffected;
-    }
-
     private Cursor localQuery(String[] projection, String selection, String[] mSelectArg, String sortOrder) {
         //ToDo: Need to revisit
         Log.v(TAG, "Query @ Custom "+selection);
@@ -539,6 +495,48 @@ public class SimpleDynamoProvider extends ContentProvider {
             Log.e(TAG, "Exception in local Query");
         }
         return cursor;
+    }
+
+    private MatrixCursor remoteQuery(String readOwnerId, String selection, boolean retry) {
+        Integer readOwnerPort = Integer.parseInt(readOwnerId) * 2;
+        Log.v(TAG, "Calling Remote Query for "+ selection+ "to "+readOwnerPort);
+        MatrixCursor matrixCursor = new MatrixCursor(new String[]{SimpleDynamoDataEntry.COLUMN_NAME_KEY, SimpleDynamoDataEntry.COLUMN_NAME_VALUE});
+        try {
+            Socket socket = new Socket(InetAddress.getByAddress(new byte[]{10, 0, 2, 2}), readOwnerPort);
+            DataOutputStream out = new DataOutputStream(socket.getOutputStream());
+            socket.setSoTimeout(SimpleDynamoConfiguration.TIMEOUT_TIME);
+            socket.setTcpNoDelay(false);
+            SimpleDynamoRequest request = new SimpleDynamoRequest(myId, SimpleDynamoRequest.Type.QUERY, selection);
+            String message = request.toString();
+            //Send data to server
+            out.writeUTF(message);
+
+            //Receive data from server
+            DataInputStream in = new DataInputStream(socket.getInputStream());
+            String reply = in.readUTF();
+            String[] response = reply.split(SimpleDynamoConfiguration.ARG_DELIMITER);
+            if(response.length > 0) {
+                for(int i = 0; i < response.length - 1 ; i++) {
+                    matrixCursor.addRow(new String[] {response[i], response[i+1]});
+                    i++;
+                }
+            }
+        } catch (IOException e) {
+            Log.e(TAG, "IO Exception in Query "+readOwnerPort);
+            if(!retry) {
+                Log.v(TAG, "ALERT THIS SHOULD PRINT");
+            }
+            if(retry) {
+                String newReadOwner = findNewReadOwner(readOwnerId);
+                matrixCursor = remoteQuery(newReadOwner, selection, false);
+            }
+
+        } catch (Exception e) {
+            Log.e(TAG, " E "+e.getMessage());
+            Log.e(TAG, "Exception in Query 2");
+        } finally {
+            return matrixCursor;
+        }
     }
 
     private static String[] getPreferenceList(String[] list, String node) {
@@ -646,5 +644,17 @@ public class SimpleDynamoProvider extends ContentProvider {
         return readOwner;
     }
 
+    private String findNewReadOwner(String currentReadOwner) {
+        int location = 0;
+        for (int i = 0; i < SimpleDynamoConfiguration.PORTS.length; i++) {
+            if (SimpleDynamoConfiguration.PORTS[i].equals(currentReadOwner)) {
+                location = i;
+                break;
+            }
+        }
+        int loc = location - 1;
+
+        return loc >- 1 ? SimpleDynamoConfiguration.PORTS[loc]: SimpleDynamoConfiguration.PORTS[SimpleDynamoConfiguration.PORTS.length -1];
+    }
 
 }
