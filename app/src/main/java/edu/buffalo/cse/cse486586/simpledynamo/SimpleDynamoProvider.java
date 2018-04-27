@@ -41,6 +41,8 @@ public class SimpleDynamoProvider extends ContentProvider {
     private SQLiteDatabase db;
     private BlockingQueue<String> blockingQueue = new ArrayBlockingQueue<String>(1);
     private Map<String, Integer> insertResponse = new HashMap<String, Integer>();
+    private boolean ready;
+    private boolean isFailed;
 
     @Override
     public String getType(Uri uri) {
@@ -50,6 +52,17 @@ public class SimpleDynamoProvider extends ContentProvider {
 	@Override
 	public boolean onCreate() {
         running = true;
+        /*
+         * Checking for failure
+         */
+        Cursor cursor = localQuery(null,null,null, null);
+        if(cursor.getCount() == 0) {
+            isFailed = true;
+            ready = false;
+        } else {
+            isFailed = false;
+            ready = true;
+        }
         /*
          * Calculate the port number that this AVD listens on.
          * It is just a hack that I came up with to get around the networking limitations of AVDs.

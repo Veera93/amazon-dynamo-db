@@ -37,7 +37,7 @@ public class SimpleDynamoActivity extends Activity {
 		getMenuInflater().inflate(R.menu.simple_dynamo, menu);
 		return true;
 	}
-	
+
 	public void onStop() {
         super.onStop();
 	    Log.v("Test", "onStop()");
