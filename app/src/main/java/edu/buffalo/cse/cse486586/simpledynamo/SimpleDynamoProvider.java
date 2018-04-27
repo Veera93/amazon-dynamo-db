@@ -7,6 +7,7 @@ import java.net.InetAddress;
 import java.net.ServerSocket;
 import java.net.Socket;
 import java.net.SocketException;
+import java.net.SocketTimeoutException;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 
@@ -90,14 +91,15 @@ public class SimpleDynamoProvider extends ContentProvider {
             String token = key+SimpleDynamoConfiguration.ARG_DELIMITER+value+SimpleDynamoConfiguration.ARG_DELIMITER+myId;
             SimpleDynamoRequest request = new SimpleDynamoRequest(coordinatorId, SimpleDynamoRequest.Type.COORDINATOR, token);
             String args = request.toString();
-            sendToCoordinator(coordinatorPort.toString(), args);
+            sendToCoordinator(coordinatorPort, args);
             String output = blockingQueue.poll(SimpleDynamoConfiguration.TIMEOUT_BLOCKING, TimeUnit.MILLISECONDS);
             //If timeout expires then output will be null
             Log.v(TAG,"Blocking queue released: "+ output);
             if(output == null) {
                 String newCoordinator = findNewCoordinator(coordinatorId);
-                Log.v(TAG, "Resending inserting again for "+key+" to "+coordinatorPort);
-                sendToCoordinator(newCoordinator.toString(), args);
+                Integer newCoordinatorPort = Integer.parseInt(newCoordinator) * 2;
+                Log.v(TAG, "Resending inserting again for "+key+" to "+newCoordinatorPort);
+                sendToCoordinator(newCoordinatorPort, args);
                 output = blockingQueue.poll(SimpleDynamoConfiguration.TIMEOUT_BLOCKING, TimeUnit.MILLISECONDS);
                 Log.v(TAG,"Second Blocking queue released: "+ output);
             }
@@ -261,6 +263,9 @@ public class SimpleDynamoProvider extends ContentProvider {
                                 values.deleteCharAt(values.length() - 1);
                             DataOutputStream out = new DataOutputStream(server.getOutputStream());
                             out.writeUTF(values.toString());
+                        } else if(type.equals(SimpleDynamoRequest.Type.ACK)) {
+                            DataOutputStream out = new DataOutputStream(server.getOutputStream());
+                            out.writeUTF("ALIVE");
                         }
                     }
                     server.close();
@@ -348,8 +353,16 @@ public class SimpleDynamoProvider extends ContentProvider {
                 Log.v(TAG,"Outgoing message to "+ port+" message "+message);
                 Socket socket = new Socket(InetAddress.getByAddress(new byte[]{10, 0, 2, 2}), port);
                 DataOutputStream out = new DataOutputStream(socket.getOutputStream());
-                socket.setSoTimeout(SimpleDynamoConfiguration.TIMEOUT_TIME);
+                socket.setSoTimeout(SimpleDynamoConfiguration.ACK_TIME);
                 socket.setTcpNoDelay(false);
+                SimpleDynamoRequest ack = new SimpleDynamoRequest(myId, SimpleDynamoRequest.Type.ACK, "ack");
+                out.writeUTF(ack.toString());
+                DataInputStream in = new DataInputStream(socket.getInputStream());
+                String sAck = in.readUTF();
+                socket.close();
+                socket = new Socket(InetAddress.getByAddress(new byte[]{10, 0, 2, 2}), port);
+                out = new DataOutputStream(socket.getOutputStream());
+                socket.setSoTimeout(SimpleDynamoConfiguration.TIMEOUT_TIME);
                 //Send data to server
                 out.writeUTF(message);
                 socket.close();
@@ -362,6 +375,8 @@ public class SimpleDynamoProvider extends ContentProvider {
                     insertResponse.put(parsedMsg[2], 1);
                     Log.v(TAG, "insertResponse : "+insertResponse.get(parsedMsg[2])+" for "+parsedMsg[2]);
                 }
+            } catch (SocketTimeoutException e) {
+                Log.e(TAG, "ClientTask SocketTimeout Exception");
             } catch (SocketException e) {
                 Log.e(TAG, "ClientTask Socket Exception");
             } catch (IOException e) {
@@ -372,12 +387,12 @@ public class SimpleDynamoProvider extends ContentProvider {
         }
     }
 
-    private void sendToCoordinator(String port, String message) {
+    private void sendToCoordinator(Integer port, String message) {
             //Any message to be sent to any coordinator goes here and it will be blocked using the socket
             Log.v(TAG,"Outgoing message to "+ port+" message "+message);
             try {
                 //Send data to server
-                Socket socket = new Socket(InetAddress.getByAddress(new byte[]{10, 0, 2, 2}), Integer.parseInt(port));
+                Socket socket = new Socket(InetAddress.getByAddress(new byte[]{10, 0, 2, 2}), port);
                 DataOutputStream out = new DataOutputStream(socket.getOutputStream());
                 out.writeUTF(message);
                 socket.close();

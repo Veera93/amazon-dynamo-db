@@ -37,6 +37,7 @@ class SimpleDynamoRequest {
         static final String COORDINATOR = "coordinator";
         static final String REPLICATE = "replicate";
         static final String QUERY = "query";
+        static final String ACK = "ack";
     }
 }
 
