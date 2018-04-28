@@ -42,9 +42,10 @@ public class SimpleDynamoProvider extends ContentProvider {
     private  SimpleDynamoDbHelper dbHelper;
     private SQLiteDatabase db;
     private BlockingQueue<String> blockingQueue = new ArrayBlockingQueue<String>(1);
+    private String insertedValue = new String();
     private Map<String, Integer> insertResponse = new HashMap<String, Integer>();
-    private boolean ready;
-    private boolean isFailed;
+    private Object lock = new Object();
+    private boolean isRecovering = true;
 
     @Override
     public String getType(Uri uri) {
@@ -121,7 +122,15 @@ public class SimpleDynamoProvider extends ContentProvider {
     @Override
     public Cursor query(Uri uri, String[] projection, String selection,
                         String[] selectionArgs, String sortOrder) {
-
+        synchronized (lock) {
+            while(isRecovering) {
+                try {
+                    lock.wait();
+                } catch (InterruptedException e) {
+                    e.printStackTrace();
+                }
+            }
+        }
         Log.i(TAG, "Content provider query called "+ selection);
         dbHelper = new SimpleDynamoDbHelper(this.getContext());
         db = dbHelper.getReadableDatabase();
@@ -134,8 +143,8 @@ public class SimpleDynamoProvider extends ContentProvider {
                         Integer port = (Integer.parseInt(id) * 2);
                         Socket socket = new Socket(InetAddress.getByAddress(new byte[]{10, 0, 2, 2}), port);
                         DataOutputStream out = new DataOutputStream(socket.getOutputStream());
-                        socket.setSoTimeout(SimpleDynamoConfiguration.TIMEOUT_TIME);
-                        socket.setTcpNoDelay(false);
+                        //socket.setSoTimeout(SimpleDynamoConfiguration.TIMEOUT_TIME);
+                        //socket.setTcpNoDelay(false);
                         SimpleDynamoRequest request = new SimpleDynamoRequest(myId, SimpleDynamoRequest.Type.QUERY, SimpleDynamoConfiguration.GLOBAL);
                         String message = request.toString();
                         //Send data to server
@@ -231,12 +240,10 @@ public class SimpleDynamoProvider extends ContentProvider {
                             //Insert in my local
                             String[] token = parsedMsg[2].split(SimpleDynamoConfiguration.ARG_DELIMITER);
                             String coordinator = parsedMsg[0];
-                            customInsert(token[0],token[1]);
-                            //Replicating
+                            //Insert and Replicating
                             new ClientTask().executeOnExecutor(AsyncTask.SERIAL_EXECUTOR, SimpleDynamoRequest.Type.REPLICATE, coordinator , parsedMsg[2]);
                         } else if (type.equals(SimpleDynamoRequest.Type.REPLICATE)) {
                             String[] pair = parsedMsg[2].split(SimpleDynamoConfiguration.ARG_DELIMITER);
-                            customInsert(pair[0],pair[1]);
                             //Reply to coordinator
                             String coordinator = parsedMsg[0];
                             new ClientTask().executeOnExecutor(AsyncTask.SERIAL_EXECUTOR, SimpleDynamoResponse.Type.REPLICATE, coordinator , parsedMsg[2]);
@@ -256,7 +263,8 @@ public class SimpleDynamoProvider extends ContentProvider {
                                 Log.v("ALERT", token);
                             }
                         } else if(type.equals(SimpleDynamoResponse.Type.INSERT)) {
-                            blockingQueue.offer(parsedMsg[2]);
+                            blockingQueue.put(parsedMsg[2]);
+                            blockingQueue = new ArrayBlockingQueue<String>(1);
                         } else if(type.equals(SimpleDynamoRequest.Type.QUERY)) {
                             String key = parsedMsg[2];
                             String[] returnValue = customQuery(key);
@@ -280,6 +288,8 @@ public class SimpleDynamoProvider extends ContentProvider {
                     server.close();
                 } catch (IOException e) {
                     Log.e(TAG, "Exception in server");
+                } catch (InterruptedException e) {
+                    e.printStackTrace();
                 }
             }
             return null;
@@ -304,6 +314,8 @@ public class SimpleDynamoProvider extends ContentProvider {
             if(type.equals(SimpleDynamoRequest.Type.REPLICATE)) {
                 String coordinatorId = msgs[1];
                 String token = msgs[2];
+                String pair[] = token.split(SimpleDynamoConfiguration.ARG_DELIMITER);
+                customInsert(pair[0],pair[1]);
                 SimpleDynamoRequest request = new SimpleDynamoRequest(myId, SimpleDynamoRequest.Type.REPLICATE, token);
                 String[] preList = getPreferenceList(SimpleDynamoConfiguration.PORTS, coordinatorId);
                 String args = request.toString();
@@ -314,6 +326,8 @@ public class SimpleDynamoProvider extends ContentProvider {
                 }
             } else if(type.equals(SimpleDynamoResponse.Type.REPLICATE)) {
                 SimpleDynamoResponse response = new SimpleDynamoResponse(myId, SimpleDynamoResponse.Type.REPLICATE, msgs[2]);
+                String[] pair =  msgs[2].split(SimpleDynamoConfiguration.ARG_DELIMITER);
+                customInsert(pair[0],pair[1]);
                 String arg = response.toString();
                 sendMessages(new String[] {msgs[1]}, arg);
             } else if(type.equals(SimpleDynamoResponse.Type.INSERT)) {
@@ -335,8 +349,8 @@ public class SimpleDynamoProvider extends ContentProvider {
                 Log.v(TAG,"Outgoing message to "+ port+" message "+message);
                 Socket socket = new Socket(InetAddress.getByAddress(new byte[]{10, 0, 2, 2}), port);
                 DataOutputStream out = new DataOutputStream(socket.getOutputStream());
-                socket.setSoTimeout(SimpleDynamoConfiguration.TIMEOUT_TIME);
-                socket.setTcpNoDelay(false);
+                //socket.setSoTimeout(SimpleDynamoConfiguration.TIMEOUT_TIME);
+                //socket.setTcpNoDelay(false);
                 //Send data to server
                 out.writeUTF(message);
                 socket.close();
@@ -356,14 +370,16 @@ public class SimpleDynamoProvider extends ContentProvider {
 
     private void sendReplicateMessages(String[] ids, String message) {
         //Any message to be sent to any participant goes here
+        String[] parsedMsg = message.split(SimpleDynamoConfiguration.DELIMITER);
+        insertResponse.put(parsedMsg[2], ids.length);
         for(String id : ids) {
             try {
                 Integer port = (Integer.parseInt(id) * 2);
-                Log.v(TAG,"Outgoing message to "+ port+" message "+message);
+                Log.v(TAG,"Outgoing replicate message to "+ port+" message "+message);
                 Socket socket = new Socket(InetAddress.getByAddress(new byte[]{10, 0, 2, 2}), port);
                 DataOutputStream out = new DataOutputStream(socket.getOutputStream());
-                socket.setSoTimeout(SimpleDynamoConfiguration.ACK_TIME);
-                socket.setTcpNoDelay(false);
+                //socket.setSoTimeout(SimpleDynamoConfiguration.ACK_TIME);
+                //socket.setTcpNoDelay(false);
                 SimpleDynamoRequest ack = new SimpleDynamoRequest(myId, SimpleDynamoRequest.Type.ACK, "ack");
                 out.writeUTF(ack.toString());
                 DataInputStream in = new DataInputStream(socket.getInputStream());
@@ -372,27 +388,19 @@ public class SimpleDynamoProvider extends ContentProvider {
                 socket.close();
                 socket = new Socket(InetAddress.getByAddress(new byte[]{10, 0, 2, 2}), port);
                 out = new DataOutputStream(socket.getOutputStream());
-                socket.setSoTimeout(SimpleDynamoConfiguration.TIMEOUT_TIME);
+                //socket.setSoTimeout(SimpleDynamoConfiguration.TIMEOUT_TIME);
                 //Send data to server
                 out.writeUTF(message);
                 socket.close();
-                String[] parsedMsg = message.split(SimpleDynamoConfiguration.DELIMITER);
-                Integer prevCount = insertResponse.get(parsedMsg[2]);
-                if(prevCount != null) {
-                    insertResponse.put(parsedMsg[2], insertResponse.get(parsedMsg[2]) + 1);
-                    Log.v(TAG, "insertResponse : "+insertResponse.get(parsedMsg[2])+" for "+parsedMsg[2]);
-                } else {
-                    insertResponse.put(parsedMsg[2], 1);
-                    Log.v(TAG, "insertResponse : "+insertResponse.get(parsedMsg[2])+" for "+parsedMsg[2]);
-                }
-            } catch (SocketTimeoutException e) {
-                Log.e(TAG, "ClientTask SocketTimeout Exception "+message);
             } catch (SocketException e) {
                 Log.e(TAG, "ClientTask Socket Exception");
+                insertResponse.put(parsedMsg[2], insertResponse.get(parsedMsg[2]) - 1);
             } catch (IOException e) {
                 Log.e(TAG, "ClientTask socket IOException ");
+                insertResponse.put(parsedMsg[2], insertResponse.get(parsedMsg[2]) - 1);
             } catch (Exception e) {
                 Log.e(TAG, e.getMessage());
+                insertResponse.put(parsedMsg[2], insertResponse.get(parsedMsg[2]) - 1);
             }
         }
     }
@@ -533,8 +541,8 @@ public class SimpleDynamoProvider extends ContentProvider {
         try {
             Socket socket = new Socket(InetAddress.getByAddress(new byte[]{10, 0, 2, 2}), readOwnerPort);
             DataOutputStream out = new DataOutputStream(socket.getOutputStream());
-            socket.setSoTimeout(SimpleDynamoConfiguration.TIMEOUT_TIME);
-            socket.setTcpNoDelay(false);
+            //socket.setSoTimeout(SimpleDynamoConfiguration.TIMEOUT_TIME);
+            //socket.setTcpNoDelay(false);
             SimpleDynamoRequest request = new SimpleDynamoRequest(myId, SimpleDynamoRequest.Type.QUERY, selection);
             String message = request.toString();
             //Send data to server
@@ -710,8 +718,8 @@ public class SimpleDynamoProvider extends ContentProvider {
             Socket socket = new Socket(InetAddress.getByAddress(new byte[]{10, 0, 2, 2}), port);
             Log.v(TAG, "Contacting "+port);
             DataOutputStream out = new DataOutputStream(socket.getOutputStream());
-            socket.setSoTimeout(SimpleDynamoConfiguration.TIMEOUT_TIME);
-            socket.setTcpNoDelay(false);
+            //socket.setSoTimeout(SimpleDynamoConfiguration.TIMEOUT_TIME);
+            //socket.setTcpNoDelay(false);
             SimpleDynamoRequest request = new SimpleDynamoRequest(myId, SimpleDynamoRequest.Type.QUERY, SimpleDynamoConfiguration.GLOBAL);
             String message = request.toString();
             //Send data to server
@@ -729,8 +737,8 @@ public class SimpleDynamoProvider extends ContentProvider {
             port = (Integer.parseInt(id) * 2);
             socket = new Socket(InetAddress.getByAddress(new byte[]{10, 0, 2, 2}), port);
             out = new DataOutputStream(socket.getOutputStream());
-            socket.setSoTimeout(SimpleDynamoConfiguration.TIMEOUT_TIME);
-            socket.setTcpNoDelay(false);
+            //socket.setSoTimeout(SimpleDynamoConfiguration.TIMEOUT_TIME);
+            //socket.setTcpNoDelay(false);
             request = new SimpleDynamoRequest(myId, SimpleDynamoRequest.Type.QUERY, SimpleDynamoConfiguration.GLOBAL);
             message = request.toString();
             Log.v(TAG, "Querying request");
@@ -775,8 +783,14 @@ public class SimpleDynamoProvider extends ContentProvider {
             Log.e(TAG, "IO Exception in StartUp "+id);
         } catch (Exception e) {
             Log.e(TAG, "Exception in query recovery");
+        } finally {
+            synchronized (lock) {
+                isRecovering = false;
+                lock.notify();
+            }
+
+            Log.i(TAG,"Recovery Done");
         }
-        Log.i(TAG,"Recovery Done");
     }
 
     public static String[] getPreList(String node) {
