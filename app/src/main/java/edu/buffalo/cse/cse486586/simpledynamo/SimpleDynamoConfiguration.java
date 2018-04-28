@@ -13,6 +13,7 @@ public class SimpleDynamoConfiguration {
     static final String LOCAL="@";
     static final Integer TIMEOUT_TIME = 400;
     static final Integer TIMEOUT_BLOCKING = 1000;
-    static final Integer ACK_TIME = 100;
+    static final Integer ACK_TIME = 400;
     static final String SOFT_DELETE = "\u1961";
+    static final String INSERT = "LocalInsert";
 }

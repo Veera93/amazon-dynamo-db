@@ -3,11 +3,13 @@ package edu.buffalo.cse.cse486586.simpledynamo;
 import java.io.DataInputStream;
 import java.io.DataOutputStream;
 import java.io.IOException;
+import java.lang.reflect.Array;
 import java.net.InetAddress;
 import java.net.ServerSocket;
 import java.net.Socket;
 import java.net.SocketException;
 import java.net.SocketTimeoutException;
+import java.net.UnknownHostException;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 
@@ -51,24 +53,16 @@ public class SimpleDynamoProvider extends ContentProvider {
     }
 	@Override
 	public boolean onCreate() {
+        Log.i(TAG,"On create called");
         running = true;
-        /*
-         * Checking for failure
-         */
-        Cursor cursor = localQuery(null,null,null, null);
-        if(cursor.getCount() == 0) {
-            isFailed = true;
-            ready = false;
-        } else {
-            isFailed = false;
-            ready = true;
-        }
+
         /*
          * Calculate the port number that this AVD listens on.
          * It is just a hack that I came up with to get around the networking limitations of AVDs.
          */
         TelephonyManager tel = (TelephonyManager) getContext().getSystemService(Context.TELEPHONY_SERVICE);
         myId = tel.getLine1Number().substring(tel.getLine1Number().length() - 4);
+        Log.v(TAG, "id "+myId);
         try {
             /*
              * Create a server socket as well as a thread (AsyncTask) that listens on the server
@@ -96,7 +90,7 @@ public class SimpleDynamoProvider extends ContentProvider {
          * Used SQLite for database
          */
         try {
-            Log.v(TAG,"Content provider insert called "+values.toString());
+            Log.i(TAG,"Content provider insert called "+values.toString());
             String key = (String) values.get(SimpleDynamoDataEntry.COLUMN_NAME_KEY);
             String value = (String) values.get(SimpleDynamoDataEntry.COLUMN_NAME_VALUE);
             String coordinatorId = findOwner(key);
@@ -119,6 +113,7 @@ public class SimpleDynamoProvider extends ContentProvider {
         } catch (Exception e) {
             Log.e(TAG, "Exception in Sending inserting again");
         } finally {
+            Log.v(TAG, "Insert done "+ values.get(SimpleDynamoDataEntry.COLUMN_NAME_KEY));
             return uri;
         }
     }
@@ -127,7 +122,7 @@ public class SimpleDynamoProvider extends ContentProvider {
     public Cursor query(Uri uri, String[] projection, String selection,
                         String[] selectionArgs, String sortOrder) {
 
-        Log.v(TAG, "Content provider query called "+ selection);
+        Log.i(TAG, "Content provider query called "+ selection);
         dbHelper = new SimpleDynamoDbHelper(this.getContext());
         db = dbHelper.getReadableDatabase();
         MatrixCursor matrixCursor = new MatrixCursor(new String[]{SimpleDynamoDataEntry.COLUMN_NAME_KEY, SimpleDynamoDataEntry.COLUMN_NAME_VALUE});
@@ -198,7 +193,7 @@ public class SimpleDynamoProvider extends ContentProvider {
 
 	@Override
 	public int delete(Uri uri, String selection, String[] selectionArgs) {
-        Log.v(TAG, "Content provider delete called "+ selection);
+        Log.i(TAG, "Content provider delete called "+ selection);
         ContentValues values = new ContentValues();
         values.put(SimpleDynamoDataEntry.COLUMN_NAME_KEY, selection);
         values.put(SimpleDynamoDataEntry.COLUMN_NAME_VALUE, SimpleDynamoConfiguration.SOFT_DELETE);
@@ -217,6 +212,7 @@ public class SimpleDynamoProvider extends ContentProvider {
         protected Void doInBackground(ServerSocket... sockets) {
             ServerSocket serverSocket = sockets[0];
             Socket server = null;
+            recoverFromFailure();
             while(running) {
                 try {
                     server = serverSocket.accept();
@@ -372,6 +368,7 @@ public class SimpleDynamoProvider extends ContentProvider {
                 out.writeUTF(ack.toString());
                 DataInputStream in = new DataInputStream(socket.getInputStream());
                 String sAck = in.readUTF();
+                Log.v(TAG, "Got response ack: "+sAck);
                 socket.close();
                 socket = new Socket(InetAddress.getByAddress(new byte[]{10, 0, 2, 2}), port);
                 out = new DataOutputStream(socket.getOutputStream());
@@ -389,7 +386,7 @@ public class SimpleDynamoProvider extends ContentProvider {
                     Log.v(TAG, "insertResponse : "+insertResponse.get(parsedMsg[2])+" for "+parsedMsg[2]);
                 }
             } catch (SocketTimeoutException e) {
-                Log.e(TAG, "ClientTask SocketTimeout Exception");
+                Log.e(TAG, "ClientTask SocketTimeout Exception "+message);
             } catch (SocketException e) {
                 Log.e(TAG, "ClientTask Socket Exception");
             } catch (IOException e) {
@@ -469,11 +466,11 @@ public class SimpleDynamoProvider extends ContentProvider {
                 messages = new String[mCursor.getCount() * 2];
                 int counter = 0;
                 while (mCursor.moveToNext()) {
-                    if(!SimpleDynamoDataEntry.COLUMN_NAME_VALUE.equals(SimpleDynamoConfiguration.SOFT_DELETE)) {
-                        int valueIndex = mCursor.getColumnIndex(SimpleDynamoDataEntry.COLUMN_NAME_VALUE);
-                        int keyIndex = mCursor.getColumnIndex(SimpleDynamoDataEntry.COLUMN_NAME_KEY);
-                        String k = mCursor.getString(keyIndex);
-                        String v = mCursor.getString(valueIndex);
+                    int valueIndex = mCursor.getColumnIndex(SimpleDynamoDataEntry.COLUMN_NAME_VALUE);
+                    int keyIndex = mCursor.getColumnIndex(SimpleDynamoDataEntry.COLUMN_NAME_KEY);
+                    String k = mCursor.getString(keyIndex);
+                    String v = mCursor.getString(valueIndex);
+                    if(!v.equals(SimpleDynamoConfiguration.SOFT_DELETE)) {
                         messages[counter] = k;
                         ++counter;
                         messages[counter] = v;
@@ -554,7 +551,7 @@ public class SimpleDynamoProvider extends ContentProvider {
                 }
             }
         } catch (IOException e) {
-            Log.e(TAG, "IO Exception in Query "+readOwnerPort);
+            Log.e(TAG, "IO Exception in Query "+readOwnerPort+ " for "+selection);
             if(!retry) {
                 Log.v(TAG, "ALERT THIS SHOULD PRINT");
             }
@@ -700,6 +697,103 @@ public class SimpleDynamoProvider extends ContentProvider {
         int loc = location + 1;
 
         return loc > 4 ? SimpleDynamoConfiguration.PORTS[0]:SimpleDynamoConfiguration.PORTS[loc];
+    }
+
+    private void recoverFromFailure() {
+        Log.i(TAG, "Recovering :"+ myId);
+        String id = findReadOwner(myId);
+        MatrixCursor matrixCursor = new MatrixCursor(new String[]{SimpleDynamoDataEntry.COLUMN_NAME_KEY, SimpleDynamoDataEntry.COLUMN_NAME_VALUE});
+        try {
+            Log.v(TAG, "Querying for my copy");
+            Integer port = Integer.parseInt(id) * 2;
+            Log.v(TAG, "Found port "+port);
+            Socket socket = new Socket(InetAddress.getByAddress(new byte[]{10, 0, 2, 2}), port);
+            Log.v(TAG, "Contacting "+port);
+            DataOutputStream out = new DataOutputStream(socket.getOutputStream());
+            socket.setSoTimeout(SimpleDynamoConfiguration.TIMEOUT_TIME);
+            socket.setTcpNoDelay(false);
+            SimpleDynamoRequest request = new SimpleDynamoRequest(myId, SimpleDynamoRequest.Type.QUERY, SimpleDynamoConfiguration.GLOBAL);
+            String message = request.toString();
+            //Send data to server
+            out.writeUTF(message);
+            Log.v(TAG, "Sent request");
+            //Receive data from server
+            DataInputStream in = new DataInputStream(socket.getInputStream());
+            String reply = in.readUTF();
+            Log.v(TAG, "Received response");
+            String[] oResponse = reply.split(SimpleDynamoConfiguration.ARG_DELIMITER);
+            socket.close();
+            Log.v(TAG, "Querying for replica");
+            id = findNewReadOwner(myId);
+            String[] pred = getPreList(myId);
+            port = (Integer.parseInt(id) * 2);
+            socket = new Socket(InetAddress.getByAddress(new byte[]{10, 0, 2, 2}), port);
+            out = new DataOutputStream(socket.getOutputStream());
+            socket.setSoTimeout(SimpleDynamoConfiguration.TIMEOUT_TIME);
+            socket.setTcpNoDelay(false);
+            request = new SimpleDynamoRequest(myId, SimpleDynamoRequest.Type.QUERY, SimpleDynamoConfiguration.GLOBAL);
+            message = request.toString();
+            Log.v(TAG, "Querying request");
+            //Send data to server
+            out.writeUTF(message);
+
+            //Receive data from server
+            in = new DataInputStream(socket.getInputStream());
+            reply = in.readUTF();
+            Log.v(TAG, "Querying response");
+            String[] rResponse = reply.split(SimpleDynamoConfiguration.ARG_DELIMITER);
+            if(rResponse.length > 0) {
+                for(int i = 0; i < rResponse.length - 1 ; i++) {
+                    if(findOwner(rResponse[i]).equals(pred[0]) || findOwner(rResponse[i]).equals(pred[1])) {
+                        matrixCursor.addRow(new String[] {rResponse[i], rResponse[i+1]});
+                    }
+                    i++;
+                }
+            }
+
+            if(oResponse.length > 0) {
+                for(int i = 0; i < oResponse.length - 1 ; i++) {
+                    if(findOwner(oResponse[i]).equals(myId)) {
+                        matrixCursor.addRow(new String[] {oResponse[i], oResponse[i+1]});
+                    }
+                    i++;
+                }
+            }
+
+            socket.close();
+            while (matrixCursor.moveToNext()) {
+                int valueIndex = matrixCursor.getColumnIndex(SimpleDynamoDataEntry.COLUMN_NAME_VALUE);
+                int keyIndex = matrixCursor.getColumnIndex(SimpleDynamoDataEntry.COLUMN_NAME_KEY);
+                String k = matrixCursor.getString(keyIndex);
+                String v = matrixCursor.getString(valueIndex);
+                if(!v.equals(SimpleDynamoConfiguration.SOFT_DELETE) && !v.equals("null")) {
+                    Log.v(TAG, "Inserting "+v);
+                    customInsert(k,v);
+                }
+            }
+        } catch (IOException e) {
+            Log.e(TAG, "IO Exception in StartUp "+id);
+        } catch (Exception e) {
+            Log.e(TAG, "Exception in query recovery");
+        }
+        Log.i(TAG,"Recovery Done");
+    }
+
+    public static String[] getPreList(String node) {
+        int location = 0;
+        for(int i=0;i<SimpleDynamoConfiguration.PORTS.length;i++) {
+            if(SimpleDynamoConfiguration.PORTS[i].equals(node)) {
+                location = i;
+                break;
+            }
+        }
+        if(location == 0) {
+            return new String[] { SimpleDynamoConfiguration.PORTS[SimpleDynamoConfiguration.PORTS.length - 1], SimpleDynamoConfiguration.PORTS[SimpleDynamoConfiguration.PORTS.length - 2] };
+        } else if (location == 1) {
+            return new String[] { SimpleDynamoConfiguration.PORTS[0], SimpleDynamoConfiguration.PORTS[SimpleDynamoConfiguration.PORTS.length - 1] };
+        } else {
+            return new String[] {  SimpleDynamoConfiguration.PORTS[location-1], SimpleDynamoConfiguration.PORTS[location-2]};
+        }
     }
 
 }
