@@ -111,6 +111,7 @@ public class SimpleDynamoProvider extends ContentProvider {
             String args = request.toString();
             sendToCoordinator(coordinatorPort, args);
             String output = blockingQueue.poll(SimpleDynamoConfiguration.TIMEOUT_BLOCKING, TimeUnit.MILLISECONDS);
+            blockingQueue = new ArrayBlockingQueue<String>(1);
             //If timeout expires then output will be null
             Log.v(TAG,"Blocking queue released: "+ output);
             if(output == null) {
@@ -119,6 +120,7 @@ public class SimpleDynamoProvider extends ContentProvider {
                 Log.v(TAG, "Resending inserting again for "+key+" to "+newCoordinatorPort);
                 sendToCoordinator(newCoordinatorPort, args);
                 output = blockingQueue.poll(SimpleDynamoConfiguration.TIMEOUT_BLOCKING, TimeUnit.MILLISECONDS);
+                blockingQueue = new ArrayBlockingQueue<String>(1);
                 Log.v(TAG,"Second Blocking queue released: "+ output);
             }
         } catch (Exception e) {
@@ -286,7 +288,6 @@ public class SimpleDynamoProvider extends ContentProvider {
                             }
                         } else if(type.equals(SimpleDynamoResponse.Type.INSERT) && isRecovering == false) {
                             blockingQueue.put(parsedMsg[2]);
-                            blockingQueue = new ArrayBlockingQueue<String>(1);
                         } else if(type.equals(SimpleDynamoRequest.Type.QUERY) && isRecovering == false) {
                             String key = parsedMsg[2];
                             String[] returnValue = customQuery(key);
@@ -457,23 +458,18 @@ public class SimpleDynamoProvider extends ContentProvider {
     }
 
     private void customInsert(String key, String value) {
-        try{
-            Log.v(TAG,"Insert Custom "+ key+" "+value);
-            dbHelper = new SimpleDynamoDbHelper(this.getContext());
-            db = dbHelper.getWritableDatabase();
-            String[] keyVal = customQuery(key);
-            if(keyVal.length == 0) {
-                String sql = "INSERT INTO "+SimpleDynamoDataEntry.TABLE_NAME+" ("+SimpleDynamoDataEntry.COLUMN_NAME_KEY+", " +SimpleDynamoDataEntry.COLUMN_NAME_VALUE + ") values('"+key+"', '"+value+"');";
-                db.execSQL(sql);
-            } else {
-                customUpdate(key, value);
-            }
-
-        } catch (Exception e) {
-            Log.e(TAG, e.getMessage());
-            Log.e(TAG, "Exception in Customer insert");
-        }
+        ContentValues values = new ContentValues();
+        values.put(SimpleDynamoDataEntry.COLUMN_NAME_KEY, key);
+        values.put(SimpleDynamoDataEntry.COLUMN_NAME_VALUE, value);
+        Log.v(TAG,"Insert Custom "+ key+" "+value);
+        dbHelper = new SimpleDynamoDbHelper(this.getContext());
+        db = dbHelper.getWritableDatabase();
+        db.insertWithOnConflict (SimpleDynamoDataEntry.TABLE_NAME,
+                null,
+                values, SQLiteDatabase.CONFLICT_REPLACE);
     }
+
+
 
     private String[] customQuery(String key) {
         //ToDo: Need to revisit
@@ -516,22 +512,6 @@ public class SimpleDynamoProvider extends ContentProvider {
             mCursor.close();
             return messages;
         }
-    }
-
-    private int customUpdate(String key, String value) {
-        Log.v(TAG,"Update Custom "+key+" "+value);
-        String mSelection = SimpleDynamoDataEntry.COLUMN_NAME_KEY + " LIKE ?";
-        String[] mSelectionArgs = { key };
-        ContentValues values = new ContentValues();
-        values.put(SimpleDynamoDataEntry.COLUMN_NAME_KEY, key);
-        values.put(SimpleDynamoDataEntry.COLUMN_NAME_VALUE, value);
-        int count = db.update(
-                SimpleDynamoDataEntry.TABLE_NAME,
-                values,
-                mSelection,
-                mSelectionArgs);
-
-        return count;
     }
 
     private Cursor localQuery(String[] projection, String selection, String[] mSelectArg, String sortOrder) {
