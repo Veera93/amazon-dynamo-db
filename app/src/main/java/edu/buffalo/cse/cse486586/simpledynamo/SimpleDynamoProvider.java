@@ -26,6 +26,7 @@ import android.content.ContentProvider;
 import android.content.ContentValues;
 import android.content.Context;
 import android.database.Cursor;
+import android.database.DatabaseUtils;
 import android.database.MatrixCursor;
 import android.database.sqlite.SQLiteDatabase;
 import android.net.Uri;
@@ -55,9 +56,8 @@ public class SimpleDynamoProvider extends ContentProvider {
     }
 	@Override
 	public boolean onCreate() {
-        Log.i(TAG,"On create called");
+        Log.i(TAG,"On create called in CP");
         running = true;
-
         /*
          * Calculate the port number that this AVD listens on.
          * It is just a hack that I came up with to get around the networking limitations of AVDs.
@@ -189,7 +189,7 @@ public class SimpleDynamoProvider extends ContentProvider {
             Log.e(TAG," " + Arrays.toString(e.getStackTrace()));
             Log.e(TAG, "Exception in Query 3");
         } finally {
-            Log.v(TAG, "Returning");
+            Log.v(TAG, "Returning cursor: "+ DatabaseUtils.dumpCursorToString(cursor));
             return cursor;
         }
     }
@@ -231,6 +231,8 @@ public class SimpleDynamoProvider extends ContentProvider {
         protected Void doInBackground(ServerSocket... sockets) {
             ServerSocket serverSocket = sockets[0];
             Socket server = null;
+            isRecovering = true;
+            Log.v(TAG,"RECOVERING: "+isRecovering);
             new ClientTask().executeOnExecutor(AsyncTask.SERIAL_EXECUTOR, SimpleDynamoConfiguration.RECOVERY);
             while(running) {
                 try {
@@ -254,6 +256,7 @@ public class SimpleDynamoProvider extends ContentProvider {
                                 new ClientTask().executeOnExecutor(AsyncTask.SERIAL_EXECUTOR, SimpleDynamoRequest.Type.REPLICATE, coordinator , parsedMsg[2]);
                             } else {
                                 pendingWrites.add(parsedMsg[2]);
+                                Log.i(TAG,"ADDING: "+parsedMsg[2]);
                             }
                         } else if (type.equals(SimpleDynamoRequest.Type.REPLICATE)) {
                             if(isRecovering == false) {
@@ -263,6 +266,7 @@ public class SimpleDynamoProvider extends ContentProvider {
                                 new ClientTask().executeOnExecutor(AsyncTask.SERIAL_EXECUTOR, SimpleDynamoResponse.Type.REPLICATE, coordinator , parsedMsg[2]);
                             } else {
                                 pendingWrites.add(parsedMsg[2]);
+                                Log.i(TAG,"ADDING: "+parsedMsg[2]);
                             }
 
                         } else if (type.equals(SimpleDynamoResponse.Type.REPLICATE) && isRecovering == false) {
@@ -298,7 +302,7 @@ public class SimpleDynamoProvider extends ContentProvider {
                                 values.deleteCharAt(values.length() - 1);
                             DataOutputStream out = new DataOutputStream(server.getOutputStream());
                             out.writeUTF(values.toString());
-                        } else if(type.equals(SimpleDynamoRequest.Type.ACK) && isRecovering == false) {
+                        } else if(type.equals(SimpleDynamoRequest.Type.ACK)) {
                             DataOutputStream out = new DataOutputStream(server.getOutputStream());
                             out.writeUTF("ALIVE");
                         }
@@ -490,7 +494,6 @@ public class SimpleDynamoProvider extends ContentProvider {
 
             if (mCursor != null) {
                 //Log.v(TAG, DatabaseUtils.dumpCursorToString(mCursor));
-                Log.v(TAG, " "+mCursor.getCount());
                 messages = new String[mCursor.getCount() * 2];
                 int counter = 0;
                 while (mCursor.moveToNext()) {
@@ -795,7 +798,6 @@ public class SimpleDynamoProvider extends ContentProvider {
                 String k = matrixCursor.getString(keyIndex);
                 String v = matrixCursor.getString(valueIndex);
                 if(!v.equals(SimpleDynamoConfiguration.SOFT_DELETE) && !v.equals("null")) {
-                    Log.v(TAG, "Inserting "+v);
                     customInsert(k,v);
                 }
             }
@@ -807,11 +809,12 @@ public class SimpleDynamoProvider extends ContentProvider {
             isRecovering = false;
             for(String i: pendingWrites) {
                 String[] token = i.split(SimpleDynamoConfiguration.ARG_DELIMITER);
+                Log.v(TAG, "Inserting key: "+token[0]+"value: "+token[1]);
                 customInsert(token[0], token[1]);
             }
             pendingWrites.clear();
             synchronized (lock) {
-                lock.notify();
+                lock.notifyAll();
             }
             Log.i(TAG,"Recovery Done");
         }
