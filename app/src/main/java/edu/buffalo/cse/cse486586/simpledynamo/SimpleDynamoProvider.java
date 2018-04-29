@@ -4,6 +4,7 @@ import java.io.DataInputStream;
 import java.io.DataOutputStream;
 import java.io.IOException;
 import java.lang.reflect.Array;
+import java.lang.reflect.Constructor;
 import java.net.InetAddress;
 import java.net.ServerSocket;
 import java.net.Socket;
@@ -47,7 +48,10 @@ public class SimpleDynamoProvider extends ContentProvider {
     private ArrayList<String> pendingWrites = new ArrayList<String>();
     private Map<String, Integer> insertResponse = new HashMap<String, Integer>();
     private Object lock = new Object();
-    private boolean isRecovering = true;
+    private boolean isRecovering = false;
+    private Object readLock = new Object();
+    private String queryResponses = "";
+    private int queryCount = 0;
 
     @Override
     public String getType(Uri uri) {
@@ -111,6 +115,7 @@ public class SimpleDynamoProvider extends ContentProvider {
             String args = request.toString();
             sendToCoordinator(coordinatorPort, args);
             String output = blockingQueue.poll(SimpleDynamoConfiguration.TIMEOUT_BLOCKING, TimeUnit.MILLISECONDS);
+            blockingQueue = new ArrayBlockingQueue<String>(1);
             //If timeout expires then output will be null
             Log.v(TAG,"Blocking queue released: "+ output);
             if(output == null) {
@@ -119,6 +124,7 @@ public class SimpleDynamoProvider extends ContentProvider {
                 Log.v(TAG, "Resending inserting again for "+key+" to "+newCoordinatorPort);
                 sendToCoordinator(newCoordinatorPort, args);
                 output = blockingQueue.poll(SimpleDynamoConfiguration.TIMEOUT_BLOCKING, TimeUnit.MILLISECONDS);
+                blockingQueue = new ArrayBlockingQueue<String>(1);
                 Log.v(TAG,"Second Blocking queue released: "+ output);
             }
         } catch (Exception e) {
@@ -148,33 +154,50 @@ public class SimpleDynamoProvider extends ContentProvider {
         Cursor cursor = null;
         try {
             if(selection.compareTo(SimpleDynamoConfiguration.GLOBAL) == 0) {
+                queryCount = 5;
                 for(String id: SimpleDynamoConfiguration.PORTS) {
                     try {
                         Integer port = (Integer.parseInt(id) * 2);
                         Socket socket = new Socket(InetAddress.getByAddress(new byte[]{10, 0, 2, 2}), port);
                         DataOutputStream out = new DataOutputStream(socket.getOutputStream());
-                        //socket.setSoTimeout(SimpleDynamoConfiguration.TIMEOUT_TIME);
+                        //socket.setSoTimeout(SimpleDynamoConfiguration.ACK_TIME);
                         //socket.setTcpNoDelay(false);
+                        SimpleDynamoRequest ack = new SimpleDynamoRequest(myId, SimpleDynamoRequest.Type.ACK, "ack");
+                        out.writeUTF(ack.toString());
+
+                        DataInputStream in = new DataInputStream(socket.getInputStream());
+                        String sAck = in.readUTF();
+                        Log.v(TAG, "Got response ack: "+sAck);
+                        if(sAck.equals("RECOVERING")) {
+                            throw new IOException();
+                        }
+                        socket.close();
+                        socket = new Socket(InetAddress.getByAddress(new byte[]{10, 0, 2, 2}), port);
+                        out = new DataOutputStream(socket.getOutputStream());
                         SimpleDynamoRequest request = new SimpleDynamoRequest(myId, SimpleDynamoRequest.Type.QUERY, SimpleDynamoConfiguration.GLOBAL);
                         String message = request.toString();
                         //Send data to server
                         out.writeUTF(message);
-
-                        //Receive data from server
-                        DataInputStream in = new DataInputStream(socket.getInputStream());
-                        String reply = in.readUTF();
-                        String[] response = reply.split(SimpleDynamoConfiguration.ARG_DELIMITER);
-                        if(response.length > 0) {
-                            for(int i = 0; i < response.length - 1 ; i++) {
-                                matrixCursor.addRow(new String[] {response[i], response[i+1]});
-                                i++;
-                            }
-                        }
                         socket.close();
                     } catch (IOException e) {
                         Log.e(TAG, "IO Exception in query "+id);
+                        queryCount = queryCount - 1;
                     } catch (Exception e) {
                         Log.e(TAG, "Exception in query 1");
+                    }
+                }
+
+                synchronized (readLock) {
+                    readLock.wait(1000);
+                    Log.v(TAG, "Read lock released: "+queryCount);
+                }
+
+                String[] response = queryResponses.split(SimpleDynamoConfiguration.ARG_DELIMITER);
+                queryResponses = "";
+                if(response.length > 0) {
+                    for(int i = 0; i < response.length - 1 ; i++) {
+                        matrixCursor.addRow(new String[] {response[i], response[i+1]});
+                        i++;
                     }
                 }
                 cursor = matrixCursor;
@@ -231,7 +254,8 @@ public class SimpleDynamoProvider extends ContentProvider {
         protected Void doInBackground(ServerSocket... sockets) {
             ServerSocket serverSocket = sockets[0];
             Socket server = null;
-            isRecovering = true;
+            Log.v(TAG,"BEFORE: "+isRecovering);
+            //isRecovering = true;
             Log.v(TAG,"RECOVERING: "+isRecovering);
             new ClientTask().executeOnExecutor(AsyncTask.SERIAL_EXECUTOR, SimpleDynamoConfiguration.RECOVERY);
             while(running) {
@@ -286,25 +310,28 @@ public class SimpleDynamoProvider extends ContentProvider {
                             }
                         } else if(type.equals(SimpleDynamoResponse.Type.INSERT) && isRecovering == false) {
                             blockingQueue.put(parsedMsg[2]);
-                            blockingQueue = new ArrayBlockingQueue<String>(1);
                         } else if(type.equals(SimpleDynamoRequest.Type.QUERY) && isRecovering == false) {
-                            String key = parsedMsg[2];
-                            String[] returnValue = customQuery(key);
-                            StringBuilder values = new StringBuilder();
-                            for(int i = 0; i < returnValue.length - 1 ; i++) {
-                                values.append(returnValue[i]);
-                                values.append(SimpleDynamoConfiguration.ARG_DELIMITER);
-                                values.append(returnValue[i+1]);
-                                values.append(SimpleDynamoConfiguration.ARG_DELIMITER);
-                                i++;
+                            new ClientTask().executeOnExecutor(AsyncTask.SERIAL_EXECUTOR, type, parsedMsg[0], parsedMsg[2]);
+                        } else if(type.equals(SimpleDynamoResponse.Type.QUERY)) {
+                            if(queryResponses.equals("")) {
+                                queryResponses = parsedMsg[2];
+                            } else {
+                                queryResponses = queryResponses + SimpleDynamoConfiguration.ARG_DELIMITER +parsedMsg[2];
                             }
-                            if(values.length() > 0)
-                                values.deleteCharAt(values.length() - 1);
-                            DataOutputStream out = new DataOutputStream(server.getOutputStream());
-                            out.writeUTF(values.toString());
+                            queryCount = queryCount - 1;
+                            if(queryCount == 0) {
+                                synchronized (readLock) {
+                                    readLock.notifyAll();
+                                }
+                            }
                         } else if(type.equals(SimpleDynamoRequest.Type.ACK)) {
                             DataOutputStream out = new DataOutputStream(server.getOutputStream());
-                            out.writeUTF("ALIVE");
+                            if(isRecovering == false) {
+                                out.writeUTF("ALIVE");
+                            } else {
+                                out.writeUTF("RECOVERING");
+                            }
+
                         }
                     }
                     server.close();
@@ -357,7 +384,22 @@ public class SimpleDynamoProvider extends ContentProvider {
                 String arg = response.toString();
                 sendMessages(new String[] {msgs[1]}, arg);
             } else if(type.equals(SimpleDynamoConfiguration.RECOVERY)) {
-                recoverFromFailure();
+                //recoverFromFailure();
+            } else if(type.equals(SimpleDynamoRequest.Type.QUERY)) {
+                String key = msgs[2];
+                String[] returnValue = customQuery(key);
+                StringBuilder values = new StringBuilder();
+                for(int i = 0; i < returnValue.length - 1 ; i++) {
+                    values.append(returnValue[i]);
+                    values.append(SimpleDynamoConfiguration.ARG_DELIMITER);
+                    values.append(returnValue[i+1]);
+                    values.append(SimpleDynamoConfiguration.ARG_DELIMITER);
+                    i++;
+                }
+                if(values.length() > 0)
+                    values.deleteCharAt(values.length() - 1);
+                SimpleDynamoResponse response = new SimpleDynamoResponse(myId, SimpleDynamoResponse.Type.QUERY, values.toString());
+                sendMessages(new String[] {msgs[1]}, response.toString());
             }
             return null;
         }
@@ -409,6 +451,9 @@ public class SimpleDynamoProvider extends ContentProvider {
                 DataInputStream in = new DataInputStream(socket.getInputStream());
                 String sAck = in.readUTF();
                 Log.v(TAG, "Got response ack: "+sAck);
+                if(sAck.equals("RECOVERING")) {
+                    throw new IOException();
+                }
                 socket.close();
                 socket = new Socket(InetAddress.getByAddress(new byte[]{10, 0, 2, 2}), port);
                 out = new DataOutputStream(socket.getOutputStream());
@@ -457,22 +502,15 @@ public class SimpleDynamoProvider extends ContentProvider {
     }
 
     private void customInsert(String key, String value) {
-        try{
-            Log.v(TAG,"Insert Custom "+ key+" "+value);
-            dbHelper = new SimpleDynamoDbHelper(this.getContext());
-            db = dbHelper.getWritableDatabase();
-            String[] keyVal = customQuery(key);
-            if(keyVal.length == 0) {
-                String sql = "INSERT INTO "+SimpleDynamoDataEntry.TABLE_NAME+" ("+SimpleDynamoDataEntry.COLUMN_NAME_KEY+", " +SimpleDynamoDataEntry.COLUMN_NAME_VALUE + ") values('"+key+"', '"+value+"');";
-                db.execSQL(sql);
-            } else {
-                customUpdate(key, value);
-            }
-
-        } catch (Exception e) {
-            Log.e(TAG, e.getMessage());
-            Log.e(TAG, "Exception in Customer insert");
-        }
+        ContentValues values = new ContentValues();
+        values.put(SimpleDynamoDataEntry.COLUMN_NAME_KEY, key);
+        values.put(SimpleDynamoDataEntry.COLUMN_NAME_VALUE, value);
+        Log.v(TAG,"Insert Custom "+ key+" "+value);
+        dbHelper = new SimpleDynamoDbHelper(this.getContext());
+        db = dbHelper.getWritableDatabase();
+        db.insertWithOnConflict (SimpleDynamoDataEntry.TABLE_NAME,
+                null,
+                values, SQLiteDatabase.CONFLICT_REPLACE);
     }
 
     private String[] customQuery(String key) {
@@ -518,22 +556,6 @@ public class SimpleDynamoProvider extends ContentProvider {
         }
     }
 
-    private int customUpdate(String key, String value) {
-        Log.v(TAG,"Update Custom "+key+" "+value);
-        String mSelection = SimpleDynamoDataEntry.COLUMN_NAME_KEY + " LIKE ?";
-        String[] mSelectionArgs = { key };
-        ContentValues values = new ContentValues();
-        values.put(SimpleDynamoDataEntry.COLUMN_NAME_KEY, key);
-        values.put(SimpleDynamoDataEntry.COLUMN_NAME_VALUE, value);
-        int count = db.update(
-                SimpleDynamoDataEntry.TABLE_NAME,
-                values,
-                mSelection,
-                mSelectionArgs);
-
-        return count;
-    }
-
     private Cursor localQuery(String[] projection, String selection, String[] mSelectArg, String sortOrder) {
         //ToDo: Need to revisit
         Log.v(TAG, "Query @ Custom "+selection);
@@ -558,33 +580,37 @@ public class SimpleDynamoProvider extends ContentProvider {
     }
 
     private MatrixCursor remoteQuery(String readOwnerId, String selection, boolean retry) {
+        queryCount = 1;
         Integer readOwnerPort = Integer.parseInt(readOwnerId) * 2;
         Log.v(TAG, "Calling Remote Query for "+ selection+ "to "+readOwnerPort);
         MatrixCursor matrixCursor = new MatrixCursor(new String[]{SimpleDynamoDataEntry.COLUMN_NAME_KEY, SimpleDynamoDataEntry.COLUMN_NAME_VALUE});
         try {
             Socket socket = new Socket(InetAddress.getByAddress(new byte[]{10, 0, 2, 2}), readOwnerPort);
             DataOutputStream out = new DataOutputStream(socket.getOutputStream());
-            //socket.setSoTimeout(SimpleDynamoConfiguration.TIMEOUT_TIME);
+            //socket.setSoTimeout(SimpleDynamoConfiguration.ACK_TIME);
             //socket.setTcpNoDelay(false);
+            SimpleDynamoRequest ack = new SimpleDynamoRequest(myId, SimpleDynamoRequest.Type.ACK, "ack");
+            out.writeUTF(ack.toString());
+
+            DataInputStream in = new DataInputStream(socket.getInputStream());
+            String sAck = in.readUTF();
+            Log.v(TAG, "Got response ack: "+sAck);
+            if(sAck.equals("RECOVERING")) {
+                throw new IOException();
+            }
+            socket.close();
+            socket = new Socket(InetAddress.getByAddress(new byte[]{10, 0, 2, 2}), readOwnerPort);
+            out = new DataOutputStream(socket.getOutputStream());
             SimpleDynamoRequest request = new SimpleDynamoRequest(myId, SimpleDynamoRequest.Type.QUERY, selection);
             String message = request.toString();
             //Send data to server
             out.writeUTF(message);
+            socket.close();
 
-            //Receive data from server
-            DataInputStream in = new DataInputStream(socket.getInputStream());
-            String reply = in.readUTF();
-            String[] response = reply.split(SimpleDynamoConfiguration.ARG_DELIMITER);
-            if(response.length > 0) {
-                for(int i = 0; i < response.length - 1 ; i++) {
-                    matrixCursor.addRow(new String[] {response[i], response[i+1]});
-                    i++;
-                }
-            }
         } catch (IOException e) {
             Log.e(TAG, "IO Exception in Query "+readOwnerPort+ " for "+selection);
             if(!retry) {
-                Log.v(TAG, "ALERT THIS SHOULD PRINT");
+                Log.v(TAG, "NO RETRIES"+readOwnerPort+ " for "+selection);
             }
             if(retry) {
                 String newReadOwner = findNewReadOwner(readOwnerId);
@@ -595,6 +621,23 @@ public class SimpleDynamoProvider extends ContentProvider {
             Log.e(TAG, " E "+e.getMessage());
             Log.e(TAG, "Exception in Query 2");
         } finally {
+            synchronized (readLock) {
+                try {
+                    readLock.wait(1000);
+                } catch (InterruptedException e) {
+                    e.printStackTrace();
+                }
+                Log.v(TAG, "Read lock released: "+queryCount);
+            }
+
+            String[] response = queryResponses.split(SimpleDynamoConfiguration.ARG_DELIMITER);
+            queryResponses = "";
+            if(response.length > 0) {
+                for(int i = 0; i < response.length - 1 ; i++) {
+                    matrixCursor.addRow(new String[] {response[i], response[i+1]});
+                    i++;
+                }
+            }
             return matrixCursor;
         }
     }

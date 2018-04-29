@@ -15,5 +15,5 @@ public class SimpleDynamoConfiguration {
     static final Integer TIMEOUT_BLOCKING = 500;
     static final Integer ACK_TIME = 400;
     static final String SOFT_DELETE = "\u1961";
-    static final String RECOVERY = "recovery";
+    static final String RECOVERY = "doRecovery";
 }
