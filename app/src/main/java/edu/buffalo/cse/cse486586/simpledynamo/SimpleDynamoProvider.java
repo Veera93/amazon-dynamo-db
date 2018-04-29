@@ -13,6 +13,7 @@ import java.net.UnknownHostException;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Formatter;
 import java.util.HashMap;
@@ -42,7 +43,7 @@ public class SimpleDynamoProvider extends ContentProvider {
     private  SimpleDynamoDbHelper dbHelper;
     private SQLiteDatabase db;
     private BlockingQueue<String> blockingQueue = new ArrayBlockingQueue<String>(1);
-    private String insertedValue = new String();
+    private ArrayList<String> pendingWrites = new ArrayList<String>();
     private Map<String, Integer> insertResponse = new HashMap<String, Integer>();
     private Object lock = new Object();
     private boolean isRecovering = true;
@@ -90,6 +91,15 @@ public class SimpleDynamoProvider extends ContentProvider {
          *
          * Used SQLite for database
          */
+        synchronized (lock) {
+            while(isRecovering) {
+                try {
+                    lock.wait();
+                } catch (InterruptedException e) {
+                    e.printStackTrace();
+                }
+            }
+        }
         try {
             Log.i(TAG,"Content provider insert called "+values.toString());
             String key = (String) values.get(SimpleDynamoDataEntry.COLUMN_NAME_KEY);
@@ -221,7 +231,7 @@ public class SimpleDynamoProvider extends ContentProvider {
         protected Void doInBackground(ServerSocket... sockets) {
             ServerSocket serverSocket = sockets[0];
             Socket server = null;
-            recoverFromFailure();
+            new ClientTask().executeOnExecutor(AsyncTask.SERIAL_EXECUTOR, SimpleDynamoConfiguration.RECOVERY);
             while(running) {
                 try {
                     server = serverSocket.accept();
@@ -237,17 +247,25 @@ public class SimpleDynamoProvider extends ContentProvider {
                                 * But, in case of the coordinator failed and it is passed to its next node and hence coordinator will
                                 * not be my node so send only to my successor
                             *****/
-                            //Insert in my local
-                            String[] token = parsedMsg[2].split(SimpleDynamoConfiguration.ARG_DELIMITER);
-                            String coordinator = parsedMsg[0];
-                            //Insert and Replicating
-                            new ClientTask().executeOnExecutor(AsyncTask.SERIAL_EXECUTOR, SimpleDynamoRequest.Type.REPLICATE, coordinator , parsedMsg[2]);
+                            if(isRecovering == false) {
+                                //Insert in my local
+                                String coordinator = parsedMsg[0];
+                                //Insert and Replicating
+                                new ClientTask().executeOnExecutor(AsyncTask.SERIAL_EXECUTOR, SimpleDynamoRequest.Type.REPLICATE, coordinator , parsedMsg[2]);
+                            } else {
+                                pendingWrites.add(parsedMsg[2]);
+                            }
                         } else if (type.equals(SimpleDynamoRequest.Type.REPLICATE)) {
-                            String[] pair = parsedMsg[2].split(SimpleDynamoConfiguration.ARG_DELIMITER);
-                            //Reply to coordinator
-                            String coordinator = parsedMsg[0];
-                            new ClientTask().executeOnExecutor(AsyncTask.SERIAL_EXECUTOR, SimpleDynamoResponse.Type.REPLICATE, coordinator , parsedMsg[2]);
-                        } else if (type.equals(SimpleDynamoResponse.Type.REPLICATE)) {
+                            if(isRecovering == false) {
+                                String[] pair = parsedMsg[2].split(SimpleDynamoConfiguration.ARG_DELIMITER);
+                                //Reply to coordinator
+                                String coordinator = parsedMsg[0];
+                                new ClientTask().executeOnExecutor(AsyncTask.SERIAL_EXECUTOR, SimpleDynamoResponse.Type.REPLICATE, coordinator , parsedMsg[2]);
+                            } else {
+                                pendingWrites.add(parsedMsg[2]);
+                            }
+
+                        } else if (type.equals(SimpleDynamoResponse.Type.REPLICATE) && isRecovering == false) {
                             String token = parsedMsg[2];
                             Integer count = insertResponse.get(token);
                             Log.v(TAG, "Server insertResponse : "+insertResponse.get(token)+" for "+token);
@@ -262,10 +280,10 @@ public class SimpleDynamoProvider extends ContentProvider {
                             } else {
                                 Log.v("ALERT", token);
                             }
-                        } else if(type.equals(SimpleDynamoResponse.Type.INSERT)) {
+                        } else if(type.equals(SimpleDynamoResponse.Type.INSERT) && isRecovering == false) {
                             blockingQueue.put(parsedMsg[2]);
                             blockingQueue = new ArrayBlockingQueue<String>(1);
-                        } else if(type.equals(SimpleDynamoRequest.Type.QUERY)) {
+                        } else if(type.equals(SimpleDynamoRequest.Type.QUERY) && isRecovering == false) {
                             String key = parsedMsg[2];
                             String[] returnValue = customQuery(key);
                             StringBuilder values = new StringBuilder();
@@ -280,7 +298,7 @@ public class SimpleDynamoProvider extends ContentProvider {
                                 values.deleteCharAt(values.length() - 1);
                             DataOutputStream out = new DataOutputStream(server.getOutputStream());
                             out.writeUTF(values.toString());
-                        } else if(type.equals(SimpleDynamoRequest.Type.ACK)) {
+                        } else if(type.equals(SimpleDynamoRequest.Type.ACK) && isRecovering == false) {
                             DataOutputStream out = new DataOutputStream(server.getOutputStream());
                             out.writeUTF("ALIVE");
                         }
@@ -334,6 +352,8 @@ public class SimpleDynamoProvider extends ContentProvider {
                 SimpleDynamoResponse response = new SimpleDynamoResponse(myId, SimpleDynamoResponse.Type.INSERT, msgs[2]);
                 String arg = response.toString();
                 sendMessages(new String[] {msgs[1]}, arg);
+            } else if(type.equals(SimpleDynamoConfiguration.RECOVERY)) {
+                recoverFromFailure();
             }
             return null;
         }
@@ -784,11 +804,15 @@ public class SimpleDynamoProvider extends ContentProvider {
         } catch (Exception e) {
             Log.e(TAG, "Exception in query recovery");
         } finally {
+            isRecovering = false;
+            for(String i: pendingWrites) {
+                String[] token = i.split(SimpleDynamoConfiguration.ARG_DELIMITER);
+                customInsert(token[0], token[1]);
+            }
+            pendingWrites.clear();
             synchronized (lock) {
-                isRecovering = false;
                 lock.notify();
             }
-
             Log.i(TAG,"Recovery Done");
         }
     }
