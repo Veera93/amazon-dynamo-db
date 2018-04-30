@@ -454,6 +454,7 @@ public class SimpleDynamoProvider extends ContentProvider {
     @Override
     public void shutdown() {
         super.shutdown();
+        db.close();
         running = false;
     }
 
@@ -480,12 +481,27 @@ public class SimpleDynamoProvider extends ContentProvider {
         String[] messages = null;
         try {
             if (key.compareTo(SimpleDynamoConfiguration.GLOBAL) == 0) {
-                String sql = "SELECT * FROM "+ SimpleDynamoDataEntry.TABLE_NAME;
-                mCursor = db.rawQuery(sql, null);
+                mCursor = db.query(
+                        SimpleDynamoDataEntry.TABLE_NAME,   // The table to query
+                        null,                     // The columns to return
+                        null,                     // The columns for the WHERE clause
+                        null,                     // The values for the WHERE clause
+                        null,                  // don't group the rows
+                        null,                   // don't filter by row groups
+                        null                      // The sort order
+                );
             } else {
-                String sql = "SELECT * FROM "+SimpleDynamoDataEntry.TABLE_NAME+" WHERE key = ?";
-                String[] selectionArgs = {key};
-                mCursor = db.rawQuery(sql, selectionArgs);
+                String mSelection = SimpleDynamoDataEntry.COLUMN_NAME_KEY + " = ?";
+                String[] mSelectArg = { key };
+                mCursor = db.query(
+                        SimpleDynamoDataEntry.TABLE_NAME,   // The table to query
+                        null,                     // The columns to return
+                        mSelection,                     // The columns for the WHERE clause
+                        mSelectArg,                     // The values for the WHERE clause
+                        null,                  // don't group the rows
+                        null,                   // don't filter by row groups
+                        null                      // The sort order
+                );
             }
 
             if (mCursor != null) {
