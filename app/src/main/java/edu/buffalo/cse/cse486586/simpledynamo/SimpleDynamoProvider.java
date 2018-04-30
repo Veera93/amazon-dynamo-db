@@ -54,8 +54,8 @@ public class SimpleDynamoProvider extends ContentProvider {
         // TODO Auto-generated method stub
         return null;
     }
-	@Override
-	public boolean onCreate() {
+    @Override
+    public boolean onCreate() {
         Log.i(TAG,"On create called in CP");
         running = true;
         /*
@@ -80,7 +80,7 @@ public class SimpleDynamoProvider extends ContentProvider {
         }
 
         return true;
-	}
+    }
 
     @Override
     public Uri insert(Uri uri, ContentValues values) {
@@ -212,15 +212,15 @@ public class SimpleDynamoProvider extends ContentProvider {
         return count;
     }
 
-	@Override
-	public int delete(Uri uri, String selection, String[] selectionArgs) {
+    @Override
+    public int delete(Uri uri, String selection, String[] selectionArgs) {
         Log.i(TAG, "Content provider delete called "+ selection);
         ContentValues values = new ContentValues();
         values.put(SimpleDynamoDataEntry.COLUMN_NAME_KEY, selection);
         values.put(SimpleDynamoDataEntry.COLUMN_NAME_VALUE, SimpleDynamoConfiguration.SOFT_DELETE);
         insert(uri, values);
         return 0;
-	}
+    }
 
 
     /*
@@ -247,16 +247,17 @@ public class SimpleDynamoProvider extends ContentProvider {
                         String type = parsedMsg[1];
                         if(type.equals(SimpleDynamoRequest.Type.COORDINATOR)) {
                             /****
-                                * In the absence of failure coordinator will be equal to my node and hence send it to two replicas.
-                                * But, in case of the coordinator failed and it is passed to its next node and hence coordinator will
-                                * not be my node so send only to my successor
-                            *****/
+                             * In the absence of failure coordinator will be equal to my node and hence send it to two replicas.
+                             * But, in case of the coordinator failed and it is passed to its next node and hence coordinator will
+                             * not be my node so send only to my successor
+                             *****/
                             if(isRecovering == false) {
                                 //Insert in my local
                                 String coordinator = parsedMsg[0];
                                 //Insert and Replicating
                                 new ClientTask().executeOnExecutor(AsyncTask.SERIAL_EXECUTOR, SimpleDynamoRequest.Type.REPLICATE, coordinator , parsedMsg[2]);
                             } else {
+
                                 pendingWrites.add(parsedMsg[2]);
                                 Log.i(TAG,"ADDING: "+parsedMsg[2]);
                             }
@@ -288,6 +289,7 @@ public class SimpleDynamoProvider extends ContentProvider {
                             }
                         } else if(type.equals(SimpleDynamoResponse.Type.INSERT) && isRecovering == false) {
                             blockingQueue.put(parsedMsg[2]);
+                            blockingQueue = new ArrayBlockingQueue<String>(1);
                         } else if(type.equals(SimpleDynamoRequest.Type.QUERY) && isRecovering == false) {
                             String key = parsedMsg[2];
                             String[] returnValue = customQuery(key);
@@ -306,6 +308,16 @@ public class SimpleDynamoProvider extends ContentProvider {
                         } else if(type.equals(SimpleDynamoRequest.Type.ACK)) {
                             DataOutputStream out = new DataOutputStream(server.getOutputStream());
                             out.writeUTF("ALIVE");
+                        } else if(type.equals(SimpleDynamoRequest.Type.GOSSIP)) {
+                            if(isRecovering == false) {
+                                String[] pair = parsedMsg[2].split(SimpleDynamoConfiguration.ARG_DELIMITER);
+                                Log.v(TAG, "Gossip Insert");
+                                customInsert(pair[0], pair[1]);
+                            } else {
+                                pendingWrites.add(parsedMsg[2]);
+                                Log.i(TAG,"ADDING: "+parsedMsg[2]);
+                            }
+
                         }
                     }
                     server.close();
@@ -353,6 +365,17 @@ public class SimpleDynamoProvider extends ContentProvider {
                 customInsert(pair[0],pair[1]);
                 String arg = response.toString();
                 sendMessages(new String[] {msgs[1]}, arg);
+                //Gossping the insert
+                String coordinator = findOwner(pair[0]);
+                String[] preList = getPreferenceList(SimpleDynamoConfiguration.PORTS, coordinator);
+                SimpleDynamoRequest request = new SimpleDynamoRequest(myId, SimpleDynamoRequest.Type.GOSSIP, msgs[2]);
+                String gossip = request.toString();
+                for(String id: preList) {
+                    if(!id.equals(myId)) {
+                        sendMessages(new String[] {id}, gossip);
+                    }
+                }
+
             } else if(type.equals(SimpleDynamoResponse.Type.INSERT)) {
                 SimpleDynamoResponse response = new SimpleDynamoResponse(myId, SimpleDynamoResponse.Type.INSERT, msgs[2]);
                 String arg = response.toString();
@@ -431,24 +454,24 @@ public class SimpleDynamoProvider extends ContentProvider {
     }
 
     private void sendToCoordinator(Integer port, String message) {
-            //Any message to be sent to any coordinator goes here and it will be blocked using the socket
-            Log.v(TAG,"Outgoing message to "+ port+" message "+message);
-            try {
-                //Send data to server
-                Socket socket = new Socket(InetAddress.getByAddress(new byte[]{10, 0, 2, 2}), port);
-                DataOutputStream out = new DataOutputStream(socket.getOutputStream());
-                out.writeUTF(message);
-                socket.close();
-            } catch (SocketException e) {
-                Log.e(TAG, "ClientTask Socket Exception");
-                //ToDo: Call with port's successor for failure handling
-            } catch (IOException e) {
-                Log.e(TAG, "Exception in server");
-                //ToDo: Call with port's successor for failure handling
-            } catch (Exception e) {
-                Log.e(TAG, e.getMessage());
-                Log.e(TAG, "Exception in Send to co ordinator");
-            }
+        //Any message to be sent to any coordinator goes here and it will be blocked using the socket
+        Log.v(TAG,"Outgoing message to "+ port+" message "+message);
+        try {
+            //Send data to server
+            Socket socket = new Socket(InetAddress.getByAddress(new byte[]{10, 0, 2, 2}), port);
+            DataOutputStream out = new DataOutputStream(socket.getOutputStream());
+            out.writeUTF(message);
+            socket.close();
+        } catch (SocketException e) {
+            Log.e(TAG, "ClientTask Socket Exception");
+            //ToDo: Call with port's successor for failure handling
+        } catch (IOException e) {
+            Log.e(TAG, "Exception in server");
+            //ToDo: Call with port's successor for failure handling
+        } catch (Exception e) {
+            Log.e(TAG, e.getMessage());
+            Log.e(TAG, "Exception in Send to co ordinator");
+        }
     }
 
     @Override
@@ -834,3 +857,4 @@ public class SimpleDynamoProvider extends ContentProvider {
     }
 
 }
+

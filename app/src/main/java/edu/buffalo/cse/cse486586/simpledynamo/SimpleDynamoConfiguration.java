@@ -12,7 +12,7 @@ public class SimpleDynamoConfiguration {
     static final String GLOBAL="*";
     static final String LOCAL="@";
     static final Integer TIMEOUT_TIME = 400;
-    static final Integer TIMEOUT_BLOCKING = 500;
+    static final Integer TIMEOUT_BLOCKING = 1000;
     static final Integer ACK_TIME = 400;
     static final String SOFT_DELETE = "\u1961";
     static final String RECOVERY = "recovery";

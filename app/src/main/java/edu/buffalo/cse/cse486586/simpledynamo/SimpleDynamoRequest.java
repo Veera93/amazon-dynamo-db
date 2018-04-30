@@ -38,6 +38,7 @@ class SimpleDynamoRequest {
         static final String REPLICATE = "replicate";
         static final String QUERY = "query";
         static final String ACK = "ack";
+        static final String GOSSIP = "gossip";
     }
 }
 
